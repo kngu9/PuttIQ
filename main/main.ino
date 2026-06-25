@@ -1406,7 +1406,9 @@ static void ui_sync_from_state(uint32_t nowMs) {
       ui_request(UI_NOIMU);
       break;
     case SENSOR_SETTLING:
-      ui_request(UI_SETTLING);
+      // Settling is a brief calibration; show the listening home (not a bare
+      // "...") so the idle screen reads consistently.
+      ui_request(UI_HOME);
       break;
     case SENSOR_HOME:
       ui_request(UI_HOME);   // manual idle: toggle + START
