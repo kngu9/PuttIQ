@@ -18,9 +18,15 @@
 #include <math.h>
 #include <nrf.h>
 #include "putt_detector.h"
+#include "putt_orientation.h"
 
 // New impact-triggered detector (runs alongside the legacy path for live eval).
 static PuttDetector g_putt{DetectorConfig{}};
+// Orientation tracker: integrates the buffered stroke from the address pose so
+// face (twist about shaft) and path (swing-plane tilt) are real, not estimated.
+static OrientationTracker g_orient;
+static bool g_orientActive = false;
+static uint32_t orientLastMs = 0;
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
@@ -184,6 +190,7 @@ struct SwingStats {
   float faceAngleDeg;
   float faceAngleImpactDeg;
   bool faceAngleImpactCaptured;
+  float pathAngleImpactDeg;
 };
 
 enum ResultPage {
@@ -207,6 +214,7 @@ struct LastResult {
   int32_t impactOffsetMs;
   float faceAngleImpactDeg;
   bool faceAngleImpactCaptured;
+  float pathAngleImpactDeg;
 };
 
 enum TouchGesture {
@@ -915,7 +923,8 @@ static void showStatsPage() {
   } else {
     snprintf(impactLine, sizeof(impactLine), "Impact --");
   }
-  snprintf(faceLine, sizeof(faceLine), "Face %.1f deg", lastResult.faceAngleImpactDeg);
+  snprintf(faceLine, sizeof(faceLine), "F %.1f  P %.1f",
+           lastResult.faceAngleImpactDeg, lastResult.pathAngleImpactDeg);
 
   if (screenSpriteReady) {
     screenSprite.fillSprite(TFT_BLACK);
@@ -1386,6 +1395,7 @@ static void resetSwing(uint32_t startMs) {
   swing.faceAngleDeg = 0.0f;
   swing.faceAngleImpactDeg = 0.0f;
   swing.faceAngleImpactCaptured = false;
+  swing.pathAngleImpactDeg = 0.0f;
   resetTrace();
   pushTrace(0.0f, 0.0f);
 }
@@ -1395,6 +1405,7 @@ static void zeroFaceAngleAt(uint32_t zeroMs) {
   swing.faceAngleDeg = 0.0f;
   swing.faceAngleImpactDeg = 0.0f;
   swing.faceAngleImpactCaptured = false;
+  swing.pathAngleImpactDeg = 0.0f;
 }
 
 static void printReadyEvent(uint32_t nowMs) {
@@ -1702,6 +1713,7 @@ static void finishSwing(uint32_t nowMs) {
     lastResult.impactOffsetMs = swing.impactDetected ? (int32_t)(swing.impactMs - swing.startMs) : -1;
     lastResult.faceAngleImpactDeg = swing.faceAngleImpactCaptured ? swing.faceAngleImpactDeg : swing.faceAngleDeg;
     lastResult.faceAngleImpactCaptured = swing.faceAngleImpactCaptured;
+    lastResult.pathAngleImpactDeg = swing.pathAngleImpactDeg;
     resultPage = RESULT_PAGE_TEMPO;
     impactReplayFrame = 0;
     impactReplayLastMs = 0;
@@ -1847,6 +1859,14 @@ static void processBufferedSample(uint16_t index, bool learnAxis) {
   updateSwingFeatures(s.ms, s.gyroDps, s.gyroRad, s.linearMps2, projectionDps);
   recordHeadTrace(s.ms, s.gyroRad, projectionDps);
 
+  if (g_orientActive) {
+    float odt = (float)(s.ms - orientLastMs) / 1000.0f;
+    orientLastMs = s.ms;
+    if (odt > 0.0f && odt < 0.1f) {
+      g_orient.integrate(s.gyroRad, odt);  // gyroRad is rad/s in the body frame
+    }
+  }
+
   if (index > 0) {
     Vec3 delta = sub3(s.linearAccelMps2, orderedBuffer[index - 1].linearAccelMps2);
     float accelDelta = mag3(delta);
@@ -1856,7 +1876,9 @@ static void processBufferedSample(uint16_t index, bool learnAxis) {
     if (!swing.impactDetected && swing.transitionDetected && accelDelta >= IMPACT_ACCEL_DELTA_MPS2) {
       swing.impactDetected = true;
       swing.impactMs = s.ms;
-      swing.faceAngleImpactDeg = swing.faceAngleDeg;
+      StrokeAngles ang = g_orient.decompose(swing.gyroAxis);
+      swing.faceAngleImpactDeg = ang.faceDeg;
+      swing.pathAngleImpactDeg = ang.pathDeg;
       swing.faceAngleImpactCaptured = true;
       traceImpactIndex = traceCount > 0 ? traceCount - 1 : 0;
     }
@@ -2064,9 +2086,16 @@ static bool analyzeBufferedCandidate(uint32_t nowMs, bool requireQuiet) {
   swing.lateralAxis = mag3(lateral) < 0.0001f ? perpendicular3(swing.gyroAxis) : normalize3(lateral);
   swing.traceLastMs = orderedBuffer[startIndex].ms;
 
+  // Track orientation across the whole stroke from the address pose. Gravity at
+  // address approximates the shaft axis (face-twist axis).
+  g_orient.begin(gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f});
+  g_orientActive = true;
+  orientLastMs = orderedBuffer[startIndex].ms;
+
   for (uint16_t i = startIndex; i <= endIndex; i++) {
     processBufferedSample(i, true);
   }
+  g_orientActive = false;
   estimateEnvelopeTransition(startIndex, endIndex);
   logRawStrokeWindow(startIndex, endIndex);
 
