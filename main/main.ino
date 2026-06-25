@@ -56,7 +56,11 @@ static const float DEG_TO_RAD_F = 0.0174532925f;
 
 static const uint16_t SAMPLE_HZ = 200;
 static const uint32_t SAMPLE_PERIOD_US = 1000000UL / SAMPLE_HZ;
-static const uint16_t SAMPLE_BUFFER_SIZE = SAMPLE_HZ * 5;
+// 3 s of rolling history. This only feeds raw-CSV stroke logging now (the
+// buffered analyzer is dead and the real-time detector uses live accumulators),
+// so 5 s was ~104 KB of static RAM starving the LVGL heap. 3 s still covers a
+// stroke for logging while freeing ~41 KB for screen allocation.
+static const uint16_t SAMPLE_BUFFER_SIZE = SAMPLE_HZ * 3;
 static const uint16_t TRACE_MAX_POINTS = 240;
 static const uint32_t TRACE_POINT_MIN_MS = 10;
 
