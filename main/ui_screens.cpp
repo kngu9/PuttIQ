@@ -21,6 +21,27 @@ static const uint32_t COL_TRACK = 0x333333;
 static const int CX = 120;
 static const int CY = 120;
 
+// ---- Interaction dispatch -------------------------------------------------
+// Host (main.ino) installs this; preview leaves it null.
+UiClickFn ui_click_fn = nullptr;
+
+// Trampoline: pull the UiEventId out of user_data and forward to ui_click_fn.
+static void ui_click_trampoline(lv_event_t* e)
+{
+    if (!ui_click_fn) return;
+    lv_obj_t* obj = (lv_obj_t*)lv_event_get_target(e);
+    int id = (int)(intptr_t)lv_obj_get_user_data(obj);
+    ui_click_fn(id);
+}
+
+// Make `obj` a click target tagged with `id`.
+static void make_clickable(lv_obj_t* obj, int id)
+{
+    lv_obj_set_user_data(obj, (void*)(intptr_t)id);
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(obj, ui_click_trampoline, LV_EVENT_CLICKED, nullptr);
+}
+
 // ---- Small helpers --------------------------------------------------------
 
 static void bg_black(lv_obj_t* scr)
@@ -100,6 +121,25 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
     lv_obj_set_style_text_font(m, &lv_font_montserrat_16, LV_PART_MAIN);
     lv_obj_set_style_text_color(m, lv_color_hex(autoMode ? COL_GREY : COL_BLACK), LV_PART_MAIN);
     lv_obj_align(m, LV_ALIGN_RIGHT_MID, -14, 0);
+
+    // Two transparent click halves on top so each side is its own target.
+    lv_obj_t* ta = lv_obj_create(box);
+    lv_obj_set_size(ta, segW, Hh);
+    lv_obj_align(ta, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ta, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ta, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
+    make_clickable(ta, UI_EVT_TOGGLE_AUTO);
+
+    lv_obj_t* tm = lv_obj_create(box);
+    lv_obj_set_size(tm, segW, Hh);
+    lv_obj_align(tm, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_opa(tm, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tm, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(tm, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(tm, LV_OBJ_FLAG_SCROLLABLE);
+    make_clickable(tm, UI_EVT_TOGGLE_MAN);
 }
 
 void ui_build_home(lv_obj_t* scr, bool autoMode)
@@ -122,6 +162,7 @@ void ui_build_home(lv_obj_t* scr, bool autoMode)
         lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        make_clickable(btn, UI_EVT_START);
 
         lv_obj_t* s = lv_label_create(btn);
         lv_label_set_text(s, "START");
@@ -281,6 +322,9 @@ void ui_build_result(lv_obj_t* scr, const UiResult& r)
     snprintf(tempo, sizeof(tempo), "%.1f:1", (double)r.tempo);
     label_at(scr, tempo, &lv_font_montserrat_20, COL_WHITE, CX, 150);
     label_at(scr, "TEMPO", &lv_font_montserrat_14, COL_GREY, CX, 172);
+
+    // Tap anywhere on the result -> details.
+    make_clickable(scr, UI_EVT_RESULT_BODY);
 }
 
 // ---- Details --------------------------------------------------------------
@@ -305,6 +349,10 @@ static void detail_row(lv_obj_t* scr, const char* label, const char* value, int 
 void ui_build_details(lv_obj_t* scr, const UiResult& r)
 {
     bg_black(scr);
+
+    // Tap anywhere (outside ZERO) -> back to home/idle. Attached first so the
+    // ZERO button (added later, on top) wins its own taps.
+    make_clickable(scr, UI_EVT_DETAILS_BODY);
 
     label_at(scr, "DETAILS", &lv_font_montserrat_14, COL_GREY, CX, 38);
 
@@ -335,6 +383,7 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
     lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    make_clickable(btn, UI_EVT_ZERO);
 
     lv_obj_t* z = lv_label_create(btn);
     lv_label_set_text(z, "ZERO");

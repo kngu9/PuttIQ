@@ -146,6 +146,11 @@ enum SensorState {
 enum AppMode { MODE_AUTO, MODE_MANUAL };
 static const uint32_t MANUAL_COUNTDOWN_MS = 5000;
 
+// LVGL screen request enum. Declared up here (not next to the LVGL helpers) so
+// the Arduino auto-prototype generator sees the type before any prototype that
+// uses it.
+enum UiScreen { UI_NONE, UI_HOME, UI_COUNTDOWN, UI_RESULT, UI_DETAILS, UI_NOIMU, UI_SETTLING };
+
 // Vec3 now comes from imu_types.h (shared with the new detector modules).
 
 struct ImuSample {
@@ -1198,7 +1203,6 @@ static TouchEvent pollTouchEvent(uint32_t nowMs) {
 // just proves the LVGL pipeline by rendering the home screen and reacting to a tap.
 // ===========================================================================
 static bool      g_lvglReady = false;
-static bool      g_autoMode  = true;          // toggled by tapping the screen
 static lv_display_t* g_disp  = nullptr;
 
 // Partial render buffer: 240 x 40 RGB565 = 19200 px = 38400 bytes.
@@ -1235,18 +1239,254 @@ static void lv_touch_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
   data->state = LV_INDEV_STATE_PRESSED;
 }
 
-// Rebuild the home screen on a fresh screen object and load it.
-static void lv_show_home(void) {
-  lv_obj_t* scr = lv_obj_create(NULL);
-  ui_build_home(scr, g_autoMode);
-  lv_screen_load(scr);
+// ---------------------------------------------------------------------------
+// Safe deferred screen switching.
+//
+// THE #1 RULE: event callbacks NEVER build/load/delete LVGL screens. They only
+// set flags (g_uiReq, appMode, countdown start, ...). ui_apply() runs in loop()
+// AFTER lv_timer_handler() and does the actual build -> lv_screen_load ->
+// delete-old. Deleting a screen mid-event would free objects still being walked
+// by LVGL's dispatcher and freeze/crash the UI (the old demo bug).
+// (enum UiScreen is declared near the top of the file.)
+// ---------------------------------------------------------------------------
+static UiScreen g_uiCur = UI_NONE;
+static UiScreen g_uiReq = UI_NONE;
+static bool     g_uiForce = false;     // rebuild even if requested == current
+static int      g_countdownSecs = 5;   // digit currently shown on UI_COUNTDOWN
+static int      g_countdownTotal = (int)(MANUAL_COUNTDOWN_MS / 1000);
+static UiResult g_uiResult;            // populated from g_putt on an accepted putt
+static float    g_traceX[TRACE_CAP];   // backing storage for g_uiResult.traceX/Y
+static float    g_traceY[TRACE_CAP];
+// Raw (un-zeroed) face/path of the last accepted putt, for the ZERO button.
+static float    g_lastRawFaceDeg = 0.0f;
+static float    g_lastRawPathDeg = 0.0f;
+static bool     g_haveLastResult = false;
+
+// Forward decls for app helpers used by the click handler (defined below).
+static void armForSwing(uint32_t nowMs);
+static void enterManualHome(uint32_t nowMs);
+static void enterIdle(uint32_t nowMs);
+static void resetBuffer();
+
+// Request a screen. Pass force=true to rebuild even when it's already current
+// (used for the toggle and ZERO, which change content of the same screen kind).
+static void ui_request(UiScreen s, bool force = false) {
+  g_uiReq = s;
+  if (force) {
+    g_uiForce = true;
+  }
 }
 
-// Tap anywhere flips auto/manual + rebuilds home. Proves touch -> display.
-static void lv_home_clicked_cb(lv_event_t* e) {
-  (void)e;
-  g_autoMode = !g_autoMode;
-  lv_show_home();
+// Build a fresh screen object for `s` and populate it.
+static lv_obj_t* ui_build_screen(UiScreen s) {
+  lv_obj_t* scr = lv_obj_create(NULL);
+  switch (s) {
+    case UI_HOME:
+      // Show the "listening" (auto-style) face whenever we're armed and waiting
+      // for a stroke (auto home, OR manual after the countdown). Show the manual
+      // START face only at the manual idle home (SENSOR_HOME).
+      ui_build_home(scr, /*autoMode=*/state != SENSOR_HOME);
+      break;
+    case UI_COUNTDOWN:
+      ui_build_countdown(scr, g_countdownSecs, g_countdownTotal);
+      break;
+    case UI_RESULT:
+      ui_build_result(scr, g_uiResult);
+      break;
+    case UI_DETAILS:
+      ui_build_details(scr, g_uiResult);
+      break;
+    case UI_NOIMU: {
+      lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+      lv_obj_t* l = lv_label_create(scr);
+      lv_label_set_text(l, "NO IMU");
+      lv_obj_set_style_text_color(l, lv_color_hex(0xFFB000), LV_PART_MAIN);
+      lv_obj_set_style_text_font(l, &lv_font_montserrat_28, LV_PART_MAIN);
+      lv_obj_center(l);
+      break;
+    }
+    case UI_SETTLING:
+    default: {
+      lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+      lv_obj_t* l = lv_label_create(scr);
+      lv_label_set_text(l, "...");
+      lv_obj_set_style_text_color(l, lv_color_hex(0x888888), LV_PART_MAIN);
+      lv_obj_set_style_text_font(l, &lv_font_montserrat_28, LV_PART_MAIN);
+      lv_obj_center(l);
+      break;
+    }
+  }
+  return scr;
+}
+
+// Apply a pending screen request: build new, load it, delete the OLD active
+// screen. SAFE because this runs in loop(), never inside an event callback.
+static void ui_apply(void) {
+  if (g_uiReq == UI_NONE) {
+    return;
+  }
+  if (g_uiReq == g_uiCur && !g_uiForce) {
+    return;
+  }
+  g_uiForce = false;
+
+  lv_obj_t* old = lv_screen_active();
+  lv_obj_t* fresh = ui_build_screen(g_uiReq);
+  lv_screen_load(fresh);
+  if (old && old != fresh) {
+    lv_obj_delete(old);  // safe outside events
+  }
+  g_uiCur = g_uiReq;
+}
+
+// Click dispatch from ui_screens widgets. Flags ONLY — no screen ops here.
+static void ui_on_click(int id) {
+  uint32_t nowMs = millis();
+  switch (id) {
+    case UI_EVT_TOGGLE_AUTO:
+      if (appMode != MODE_AUTO) {
+        appMode = MODE_AUTO;
+        armForSwing(nowMs);          // auto: arm & listen immediately
+        ui_request(UI_HOME, true);
+      }
+      break;
+    case UI_EVT_TOGGLE_MAN:
+      if (appMode != MODE_MANUAL) {
+        appMode = MODE_MANUAL;
+        enterManualHome(nowMs);      // manual: drop to START home
+        ui_request(UI_HOME, true);
+      }
+      break;
+    case UI_EVT_START:
+      if (state == SENSOR_HOME) {
+        state = SENSOR_COUNTDOWN;
+        countdownStartMs = nowMs;
+        countdownLastSec = -1;
+        g_countdownSecs = g_countdownTotal;
+        ui_request(UI_COUNTDOWN, true);
+      }
+      break;
+    case UI_EVT_ZERO:
+      if (g_haveLastResult) {
+        faceZeroDeg = g_lastRawFaceDeg;
+        pathZeroDeg = g_lastRawPathDeg;
+        // Recompute the displayed result against the new zero, rebuild details.
+        g_uiResult.faceDeg = fabsf(g_lastRawFaceDeg - faceZeroDeg);
+        g_uiResult.faceLR  = (g_lastRawFaceDeg - faceZeroDeg) >= 0.0f ? 'R' : 'L';
+        g_uiResult.pathDeg = fabsf(g_lastRawPathDeg - pathZeroDeg);
+        g_uiResult.pathOut = (g_lastRawPathDeg - pathZeroDeg) >= 0.0f;
+        ui_request(UI_DETAILS, true);
+      }
+      break;
+    case UI_EVT_RESULT_BODY:
+      if (state == SENSOR_RESULT_HOLD) {
+        ui_request(UI_DETAILS);
+      }
+      break;
+    case UI_EVT_DETAILS_BODY:
+      if (state == SENSOR_RESULT_HOLD) {
+        enterIdle(nowMs);            // auto: re-arm; manual: back to home
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// Map the app FSM -> the screen that should be showing, and request it. Called
+// from loop() (which then runs ui_apply()). RESULT_HOLD is intentionally NOT
+// mapped here: results are page-able (RESULT <-> DETAILS) under user control, so
+// the result screen is requested explicitly when a putt is accepted, and screen
+// changes within RESULT_HOLD are driven by tap events.
+static void ui_sync_from_state(uint32_t nowMs) {
+  switch (state) {
+    case SENSOR_NO_IMU:
+      ui_request(UI_NOIMU);
+      break;
+    case SENSOR_SETTLING:
+      ui_request(UI_SETTLING);
+      break;
+    case SENSOR_HOME:
+      ui_request(UI_HOME);   // manual idle: toggle + START
+      break;
+    case SENSOR_COUNTDOWN: {
+      // Advance the countdown digit; rebuild only when the second changes.
+      uint32_t elapsed = nowMs - countdownStartMs;
+      int secs = (int)((MANUAL_COUNTDOWN_MS - elapsed) / 1000) + 1;
+      if (secs > g_countdownTotal) secs = g_countdownTotal;
+      if (secs < 1) secs = 1;
+      if (secs != g_countdownSecs || g_uiCur != UI_COUNTDOWN) {
+        g_countdownSecs = secs;
+        ui_request(UI_COUNTDOWN, true);
+      }
+      break;
+    }
+    case SENSOR_READY:
+      // Both auto-home (listening) and manual armed-and-waiting show the
+      // listening home (auto-style). Toggle stays live only in auto (gated in
+      // updateHomeAndCountdown / the click handler).
+      ui_request(UI_HOME);
+      break;
+    case SENSOR_SWING:
+      // Mid-stroke: keep whatever is showing (listening home). No change.
+      break;
+    case SENSOR_RESULT_HOLD:
+      // Result/details are user-paged; do not override here.
+      break;
+  }
+}
+
+// Convert a decided PuttResult into g_uiResult (+ trace arrays) and drive the
+// app into RESULT_HOLD showing UI_RESULT. Applies the face/path zero offsets.
+static void acceptPuttResult(uint32_t nowMs) {
+  PuttResult r = g_putt.result();
+
+  g_lastRawFaceDeg = r.faceDeg;
+  g_lastRawPathDeg = r.pathDeg;
+  g_haveLastResult = true;
+
+  float face = r.faceDeg - faceZeroDeg;
+  float path = r.pathDeg - pathZeroDeg;
+
+  g_uiResult.faceDeg = fabsf(face);
+  g_uiResult.faceLR  = face >= 0.0f ? 'R' : 'L';
+  g_uiResult.pathDeg = fabsf(path);
+  g_uiResult.pathOut = path >= 0.0f;
+  g_uiResult.tempo   = r.tempo;
+  g_uiResult.backMs  = r.backswingMs;
+  g_uiResult.fwdMs   = r.forwardMs;
+  g_uiResult.durMs   = r.durationMs;
+  g_uiResult.impactOffMs = 0;  // PuttResult has no impact offset; UI shows 0
+
+  int n = r.traceCount;
+  if (n > TRACE_CAP) n = TRACE_CAP;
+  for (int i = 0; i < n; i++) {
+    g_traceX[i] = r.trace[i].x;
+    g_traceY[i] = r.trace[i].y;
+  }
+  g_uiResult.traceX = g_traceX;
+  g_uiResult.traceY = g_traceY;
+  g_uiResult.traceCount = n;
+  g_uiResult.impactIndex = (int)r.impactIndex;
+
+  state = SENSOR_RESULT_HOLD;
+  stateSinceMs = nowMs;
+  requireStillnessForReady = false;
+  resetBuffer();
+  ui_request(UI_RESULT, true);
+}
+
+// Should an accepted g_putt event surface a result right now? In AUTO we always
+// show results; in MANUAL only inside the armed window (after the countdown),
+// i.e. once we've reached SENSOR_READY/SENSOR_SWING and not while idling on the
+// manual HOME or during the COUNTDOWN.
+static bool resultsAllowedNow(void) {
+  if (appMode == MODE_AUTO) {
+    return true;
+  }
+  return state == SENSOR_READY || state == SENSOR_SWING;
 }
 
 static void initLvgl(void) {
@@ -1262,11 +1502,14 @@ static void initLvgl(void) {
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, lv_touch_read_cb);
 
-  // Build the home screen and make the whole screen tappable.
+  // Route widget clicks (set in ui_screens.cpp) to our flag-only handler.
+  ui_click_fn = ui_on_click;
+
+  // Build the initial screen onto the default active screen.
   lv_obj_t* scr = lv_screen_active();
-  ui_build_home(scr, g_autoMode);
-  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(scr, lv_home_clicked_cb, LV_EVENT_CLICKED, NULL);
+  ui_build_home(scr, appMode == MODE_AUTO);
+  g_uiCur = UI_HOME;
+  g_uiReq = UI_HOME;
 
   g_lvglReady = true;
 }
@@ -1873,6 +2116,13 @@ static bool hasStrokeLikeEnvelope(uint32_t durationMs) {
 }
 
 static void finishSwing(uint32_t nowMs) {
+  // g_putt now OWNS the result UI + RESULT_HOLD state. The legacy detector still
+  // runs for serial diagnostics, but it MUST NOT drive the screen or hijack a
+  // result that g_putt already surfaced.
+  if (state == SENSOR_RESULT_HOLD) {
+    resetBuffer();
+    return;
+  }
   uint32_t durationMs = nowMs - swing.startMs;
   uint32_t backswingMs = swing.transitionDetected ? swing.transitionMs - swing.startMs : 0;
   uint32_t forwardMs = forwardMsFor(nowMs);
@@ -1921,18 +2171,15 @@ static void finishSwing(uint32_t nowMs) {
     lastResult.faceAngleImpactDeg = swing.faceAngleImpactCaptured ? swing.faceAngleImpactDeg : swing.faceAngleDeg;
     lastResult.faceAngleImpactCaptured = swing.faceAngleImpactCaptured;
     lastResult.pathAngleImpactDeg = swing.pathAngleImpactDeg;
-    resultPage = RESULT_PAGE_TRACE;
-    impactReplayFrame = 0;
-    impactReplayLastMs = 0;
-    resultPageShownMs = nowMs;
 
-    state = SENSOR_RESULT_HOLD;
-    stateSinceMs = nowMs;
-    requireStillnessForReady = false;
-    showPuttSplash();
-    showResultPage();
+    // Legacy detector accepted a stroke: log it for diagnostics, but do NOT
+    // drive the UI (g_putt owns results). Recycle the FSM so it keeps cycling.
     printResult("PUTT_DETECTED", nullptr, nowMs);
     logRawStrokeRecent(swing.startMs, nowMs);
+    state = SENSOR_SETTLING;
+    stateSinceMs = nowMs;
+    requireStillnessForReady = false;
+    fsmArmed = false;
   } else {
     printResult("PUTT_REJECTED", rejectReason, nowMs);
     state = SENSOR_SETTLING;
@@ -2572,97 +2819,16 @@ static void updateSwing(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
   }
 }
 
-// Home/countdown interaction + the AUTO/MANUAL toggle (home screens only).
+// Manual-mode countdown timing only. All home/result TOUCH interaction is now
+// handled by LVGL widget events (ui_on_click); this just advances the countdown
+// state machine and arms when it hits zero. The on-screen digit is driven by
+// ui_sync_from_state() -> ui_apply().
 static void updateHomeAndCountdown(uint32_t nowMs) {
-  // Manual countdown: redraw on each second change, arm when it hits zero.
   if (state == SENSOR_COUNTDOWN) {
     uint32_t elapsed = nowMs - countdownStartMs;
     if (elapsed >= MANUAL_COUNTDOWN_MS) {
-      armForSwing(nowMs);  // -> SENSOR_READY (manual: "PUTT" prompt, listening)
-      return;
+      armForSwing(nowMs);  // -> SENSOR_READY (manual: armed & listening)
     }
-    int secs = (int)((MANUAL_COUNTDOWN_MS - elapsed) / 1000) + 1;
-    if (secs > 5) secs = 5;
-    if (secs != countdownLastSec) {
-      countdownLastSec = secs;
-      showCountdown(secs);
-    }
-    return;
-  }
-
-  // Toggle is live only on the two HOME screens: auto-listening and manual START.
-  // (Manual armed-and-waiting just lets the detector catch the stroke.)
-  bool onHome = (state == SENSOR_HOME) ||
-                (state == SENSOR_READY && appMode == MODE_AUTO);
-  if (!onHome) {
-    return;
-  }
-
-  TouchEvent event = pollTouchEvent(nowMs);
-  if (event.gesture != TOUCH_TAP) {
-    return;
-  }
-
-  // Mode toggle pill (top of either home).
-  if (event.y >= 32 && event.y <= 68 && event.x >= 60 && event.x <= 180) {
-    if (event.x < 120) {
-      if (appMode != MODE_AUTO) {
-        appMode = MODE_AUTO;
-        armForSwing(nowMs);
-      }
-    } else {
-      appMode = MODE_MANUAL;
-      enterManualHome(nowMs);
-    }
-    return;
-  }
-
-  // START button (manual home only) -> begin the countdown.
-  if (state == SENSOR_HOME && event.y >= 100 && event.y <= 158 &&
-      event.x >= 66 && event.x <= 174) {
-    state = SENSOR_COUNTDOWN;
-    countdownStartMs = nowMs;
-    countdownLastSec = -1;
-    showCountdown(5);
-    return;
-  }
-}
-
-static void updateResultHold(uint32_t nowMs) {
-  if (state != SENSOR_RESULT_HOLD) {
-    return;
-  }
-
-  TouchEvent event = pollTouchEvent(nowMs);
-  bool minHoldElapsed = nowMs - stateSinceMs >= RESULT_MIN_HOLD_MS;
-  if (!minHoldElapsed) {
-    return;
-  }
-
-  if (event.gesture == TOUCH_NONE) {
-    return;
-  }
-
-  if (isExitButtonTap(event)) {
-    enterIdle(nowMs);  // auto: re-arm; manual: back to home
-    return;
-  }
-
-  // "ZERO" on the details page: null the face/path bias from this stroke.
-  if (resultPage == RESULT_PAGE_DETAILS && event.gesture == TOUCH_TAP &&
-      event.x >= 80 && event.x <= 160 && event.y >= 154 && event.y <= 186) {
-    faceZeroDeg = lastResult.faceAngleImpactDeg;
-    pathZeroDeg = lastResult.pathAngleImpactDeg;
-    showResultPage();
-    return;
-  }
-
-  if (event.gesture == TOUCH_SWIPE_LEFT ||
-      (event.gesture == TOUCH_TAP && event.x >= 120 && event.y < 190)) {
-    moveResultPage(1);
-  } else if (event.gesture == TOUCH_SWIPE_RIGHT ||
-             (event.gesture == TOUCH_TAP && event.x < 120 && event.y < 190)) {
-    moveResultPage(-1);
   }
 }
 
@@ -2772,18 +2938,21 @@ void loop() {
   }
 
   reportOnSerialConnect(nowMs);
-  updateResultHold(nowMs);
 
   if (!imuReady) {
     digitalWrite(LED_BUILTIN, (nowMs / 250) % 2);
     if (nowMs - lastStatusMs >= 1000) {
       lastStatusMs = nowMs;
       printNoImuStatus(nowMs);
-      showNoImu();
     }
     if (nowMs - lastImuRetryMs >= 3000) {
       lastImuRetryMs = nowMs;
       beginImu();
+    }
+    // Keep the UI alive (NO IMU screen) and process deferred swaps.
+    if (g_lvglReady) {
+      ui_sync_from_state(nowMs);
+      ui_apply();
     }
     delay(20);
     return;
@@ -2815,6 +2984,12 @@ void loop() {
     Serial.print(F(",fwd_dps=")); Serial.print(pe.features.peakForwardDps, 1);
     Serial.print(F(",axis="));    Serial.print(pe.features.axisConsistency, 2);
     Serial.print(F(",dur_ms="));  Serial.println(pe.features.durationMs);
+
+    // g_putt now OWNS the result UI. On an accepted putt (subject to the AUTO vs
+    // MANUAL gating), populate g_uiResult and switch to the result screen.
+    if (pe.decision == PuttDecision::Accept && resultsAllowedNow()) {
+      acceptPuttResult(nowMs);
+    }
   }
 
   float rawDps = gyroDps(sample.gyroRad);
@@ -2837,9 +3012,13 @@ void loop() {
     pushBuffer(nowMs, gyro, linearAccel, sample.accelMps2, dps, linearMps2);
   }
   updateSwing(nowMs, dps, gyro, linearAccel, linearMps2);
-  updateResultHold(nowMs);
   updateHomeAndCountdown(nowMs);
   printStatus(nowMs, dps);
+
+  // Drive the LVGL UI from the app FSM, then apply any deferred screen swap.
+  // ui_apply() is the ONLY place screens are loaded/deleted (never in events).
+  ui_sync_from_state(nowMs);
+  ui_apply();
 
   digitalWrite(LED_BUILTIN,
                state == SENSOR_READY ||
