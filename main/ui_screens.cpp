@@ -291,38 +291,45 @@ static void build_trace(lv_obj_t* scr, const UiResult& r, int boxPx, int& impX, 
     int n = r.traceCount;
     if (n > 64) n = 64;
 
-    // Bounds.
-    float minX = r.traceX[0], maxX = r.traceX[0];
-    float minY = r.traceY[0], maxY = r.traceY[0];
-    for (int i = 1; i < n; i++) {
-        if (r.traceX[i] < minX) minX = r.traceX[i];
-        if (r.traceX[i] > maxX) maxX = r.traceX[i];
-        if (r.traceY[i] < minY) minY = r.traceY[i];
-        if (r.traceY[i] > maxY) maxY = r.traceY[i];
+    // FIXED scale (px per trace unit), so stroke size is consistent and
+    // comparable putt-to-putt instead of auto-fitting every stroke to the frame
+    // (which amplified gentle strokes / integration noise into random squiggles).
+    // Calibrated from recorded clips: a clean putt forward span ~0.34 -> ~110px.
+    const float SCALE = 330.0f;
+    const int   SAFE_R = 78;   // clamp drawn points to this radius from center
+
+    // Light 3-tap smoothing to tame gyro-integration noise.
+    static float sx[64], sy[64];
+    for (int i = 0; i < n; i++) {
+        int a = i > 0 ? i - 1 : i;
+        int b = i < n - 1 ? i + 1 : i;
+        sx[i] = (r.traceX[a] + r.traceX[i] + r.traceX[b]) / 3.0f;
+        sy[i] = (r.traceY[a] + r.traceY[i] + r.traceY[b]) / 3.0f;
     }
-    float spanX = maxX - minX; if (spanX < 1e-6f) spanX = 1e-6f;
-    float spanY = maxY - minY; if (spanY < 1e-6f) spanY = 1e-6f;
-    // Uniform scale to preserve aspect; fit the larger span into boxPx.
-    float span = spanX > spanY ? spanX : spanY;
-    float scale = (float)boxPx / span;
-
-    float midX = (minX + maxX) * 0.5f;
-    float midY = (minY + maxY) * 0.5f;
-
-    // The stroke runs HORIZONTALLY: forward-along-target (traceY) maps to screen
-    // X (approach left -> follow-through right); lateral (traceX) maps to screen Y.
-    float fwdSign = (r.traceY[n - 1] - r.traceY[0]) < 0.0f ? -1.0f : 1.0f;
-
-    auto toPx = [&](int i, lv_point_precise_t& p) {
-        int px = CX + (int)((r.traceY[i] - midY) * scale * fwdSign + 0.5f);
-        int py = CY + (int)((r.traceX[i] - midX) * scale + 0.5f);
-        p.x = px;
-        p.y = py;
-    };
 
     int imp = r.impactIndex;
     if (imp < 0) imp = 0;
     if (imp > n - 1) imp = n - 1;
+
+    // Center on the impact point: the ball sits at screen center, path flows
+    // through it. The stroke runs HORIZONTALLY: forward (sy) -> screen X
+    // (approach left, follow-through right); lateral (sx) -> screen Y.
+    const float ox = sx[imp], oy = sy[imp];
+    const float fwdSign = (sy[n - 1] - sy[0]) < 0.0f ? -1.0f : 1.0f;
+
+    auto toPx = [&](int i, lv_point_precise_t& p) {
+        int px = CX + (int)((sy[i] - oy) * SCALE * fwdSign + 0.5f);
+        int py = CY + (int)((sx[i] - ox) * SCALE + 0.5f);
+        int dx = px - CX, dy = py - CY;
+        int d2 = dx * dx + dy * dy;
+        if (d2 > SAFE_R * SAFE_R) {          // clamp to the safe circle
+            float k = SAFE_R / sqrtf((float)d2);
+            px = CX + (int)(dx * k);
+            py = CY + (int)(dy * k);
+        }
+        p.x = px;
+        p.y = py;
+    };
 
     int na = imp + 1;          // approach: 0..imp inclusive
     int nf = n - imp;          // follow:   imp..n-1 inclusive

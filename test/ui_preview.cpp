@@ -92,10 +92,11 @@ static void make_sample_trace(void)
 {
     // Match real PuttResult head-trace convention: traceY = forward sweep along
     // the target line (large range), traceX = small lateral arc (the curvature).
+    // Realistic magnitudes from recorded clips: forward span ~0.34, lateral ~0.07.
     for (int i = 0; i < TRACE_N; i++) {
         float t = (float)i / (float)(TRACE_N - 1);   // 0..1
-        float fwd = -0.6f + 1.2f * t;                 // forward sweep -> traceY
-        float lat = 0.12f * (fwd * fwd) - 0.02f;      // gentle lateral arc -> traceX
+        float fwd = (t - 0.5f) * 0.34f;               // forward sweep -> traceY (span 0.34)
+        float lat = 0.07f * (1.0f - 4.0f * (t - 0.5f) * (t - 0.5f)); // gentle arc, peak ~0.07
         traceX[i] = lat;
         traceY[i] = fwd;
     }
