@@ -36,6 +36,10 @@ static float pathZeroDeg = 0.0f;
 #define LED_BUILTIN 13
 #endif
 
+// Instrument UI palette: one accent (amber), everything else white/grey.
+#define UI_AMBER 0xFD20
+#define UI_GREY 0x8410
+
 static const uint32_t SERIAL_BAUD = 115200;
 static const char FW_VERSION[] = "face_zero_start_v71";
 
@@ -198,9 +202,8 @@ struct SwingStats {
 };
 
 enum ResultPage {
-  RESULT_PAGE_TEMPO,
   RESULT_PAGE_TRACE,
-  RESULT_PAGE_STATS,
+  RESULT_PAGE_DETAILS,
   RESULT_PAGE_COUNT
 };
 
@@ -288,7 +291,7 @@ static float readyPeakGyroDps = 0.0f;
 static uint8_t readyStartCount = 0;
 static bool armedCaptureEvaluation = false;
 static bool fsmArmed = false;
-static ResultPage resultPage = RESULT_PAGE_TEMPO;
+static ResultPage resultPage = RESULT_PAGE_TRACE;
 static LastResult lastResult = {0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, false, -1, 0.0f, false};
 
 static TFT_eSprite screenSprite = TFT_eSprite(&tft);
@@ -458,15 +461,63 @@ static void showBoot() {
 }
 
 static void showNoImu() {
-  drawScreen("NO IMU", "Check board", "or reset", TFT_RED);
+  if (!displayReady) {
+    return;
+  }
+  if (screenSpriteReady) {
+    screenSprite.fillSprite(TFT_BLACK);
+    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCenteredSprite("NO IMU", 96, 3, UI_AMBER);
+    drawCenteredSprite("check board", 140, 1, UI_GREY);
+    screenSprite.pushSprite(0, 0);
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.drawCircle(120, 120, 118, TFT_WHITE);
+  drawCentered("NO IMU", 96, 3, UI_AMBER);
+  drawCentered("check board", 140, 1, UI_GREY);
 }
 
 static void showReady() {
-  drawScreen("READY", "Putt when set", nullptr, TFT_GREEN);
+  if (!displayReady) {
+    return;
+  }
+  if (screenSpriteReady) {
+    screenSprite.fillSprite(TFT_BLACK);
+    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCenteredSprite("PuttIQ", 104, 3, TFT_WHITE);
+    screenSprite.fillCircle(120, 150, 4, UI_AMBER);
+    drawCenteredSprite("ready", 166, 1, UI_GREY);
+    screenSprite.pushSprite(0, 0);
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.drawCircle(120, 120, 118, TFT_WHITE);
+  drawCentered("PuttIQ", 104, 3, TFT_WHITE);
+  tft.fillCircle(120, 150, 4, UI_AMBER);
+  drawCentered("ready", 166, 1, UI_GREY);
 }
 
 static void showArmed() {
   drawScreen("ARMED", "Putt now", nullptr, TFT_GREEN);
+}
+
+// Brief non-blocking amber "PUTT" confirmation drawn before the trace page.
+static void showPuttSplash() {
+  if (!displayReady) {
+    return;
+  }
+  if (screenSpriteReady) {
+    screenSprite.fillSprite(TFT_BLACK);
+    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCenteredSprite("PUTT", 104, 3, UI_AMBER);
+    screenSprite.pushSprite(0, 0);
+  } else {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCentered("PUTT", 104, 3, UI_AMBER);
+  }
+  delay(250);
 }
 
 static void showImuStarting() {
@@ -489,50 +540,26 @@ static void showResult(bool detected, const char *reason, uint32_t durationMs, f
 }
 
 static void drawPageDotsSprite(uint8_t pageIndex) {
-  int16_t startX = 106;
+  int16_t startX = 120 - ((RESULT_PAGE_COUNT - 1) * 14) / 2;
   for (uint8_t i = 0; i < RESULT_PAGE_COUNT; i++) {
-    uint16_t color = i == pageIndex ? TFT_CYAN : TFT_DARKGREY;
+    uint16_t color = i == pageIndex ? TFT_WHITE : TFT_DARKGREY;
     screenSprite.fillCircle(startX + i * 14, 182, 3, color);
   }
 }
 
 static void drawPageDotsTft(uint8_t pageIndex) {
-  int16_t startX = 106;
+  int16_t startX = 120 - ((RESULT_PAGE_COUNT - 1) * 14) / 2;
   for (uint8_t i = 0; i < RESULT_PAGE_COUNT; i++) {
-    uint16_t color = i == pageIndex ? TFT_CYAN : TFT_DARKGREY;
+    uint16_t color = i == pageIndex ? TFT_WHITE : TFT_DARKGREY;
     tft.fillCircle(startX + i * 14, 182, 3, color);
   }
 }
 
-static void showTempoPage() {
-  char tempoLine[18];
-  uint16_t tempo100 = (uint16_t)(lastResult.tempo * 100.0f + 0.5f);
-  snprintf(tempoLine, sizeof(tempoLine), "%u.%02u:1", tempo100 / 100, tempo100 % 100);
-
-  char splitLine[28];
-  snprintf(splitLine, sizeof(splitLine), "B %lu  F %lu",
-           (unsigned long)lastResult.backswingMs,
-           (unsigned long)lastResult.forwardMs);
-
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCenteredSprite("TEMPO", 42, 2, TFT_CYAN);
-    drawCenteredSprite(tempoLine, 88, 4, TFT_WHITE);
-    drawCenteredSprite(splitLine, 138, 2, TFT_LIGHTGREY);
-    drawPageDotsSprite(RESULT_PAGE_TEMPO);
-    drawExitButtonSprite();
-    screenSprite.pushSprite(0, 0);
-    return;
-  }
-
-  tft.fillScreen(TFT_BLACK);
-  tft.drawCircle(120, 120, 112, TFT_CYAN);
-  drawCentered("TEMPO", 42, 2, TFT_CYAN);
-  drawCentered(tempoLine, 88, 4, TFT_WHITE);
-  drawCentered(splitLine, 138, 2, TFT_LIGHTGREY);
-  drawPageDotsTft(RESULT_PAGE_TEMPO);
-  drawExitButtonTft();
+// Format a face angle (already zero-corrected) as "1.2R" / "0.8L".
+// Open face (positive) reads R(ight) for a right-handed reference; closed reads L.
+static void formatFaceRL(char *buf, size_t n, float faceDeg) {
+  char suffix = faceDeg >= 0.0f ? 'R' : 'L';
+  snprintf(buf, n, "%.1f%c", fabsf(faceDeg), suffix);
 }
 
 static int16_t traceScreenX(float x, float scale) {
@@ -774,197 +801,185 @@ static void safeDrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_
                  clampScreenCoord(x1), clampScreenCoord(y1), color);
 }
 
-static void showSafeImpactPage() {
+// TRACE hero page: immersive clubhead arc on the instrument face.
+// Sprite-only layout; minimal centered fallback when the sprite is unavailable.
+static void showTracePage() {
   if (!displayReady) {
     return;
   }
 
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCenteredSprite("IMPACT", 34, 2, TFT_CYAN);
-  } else {
+  if (!screenSpriteReady) {
     tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCentered("IMPACT", 34, 2, TFT_CYAN);
+    tft.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCentered("TRACE", 110, 2, TFT_WHITE);
+    drawPageDotsTft(RESULT_PAGE_TRACE);
+    drawExitButtonTft();
+    return;
   }
+
+  char faceVal[12];
+  formatFaceRL(faceVal, sizeof(faceVal), lastResult.faceAngleImpactDeg - faceZeroDeg);
+  char tempoVal[12];
+  snprintf(tempoVal, sizeof(tempoVal), "%.1f:1", lastResult.tempo);
+
+  screenSprite.fillSprite(TFT_BLACK);
+  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+  // Straight-stroke reference (faint vertical line through center).
+  safeDrawLine(120, 60, 120, 178, TFT_DARKGREY);
+
+  int16_t ballX = 120;
+  int16_t ballY = 120;
 
   uint16_t startIndex = forwardTraceStartIndex();
   if (traceCount < 2 || startIndex >= traceCount - 1) {
-    if (screenSpriteReady) {
-      drawCenteredSprite("No trace", 112, 2, TFT_WHITE);
-      drawPageDotsSprite(RESULT_PAGE_TRACE);
-      drawExitButtonSprite();
-      screenSprite.pushSprite(0, 0);
-    } else {
-      drawCentered("No trace", 112, 2, TFT_WHITE);
-      drawPageDotsTft(RESULT_PAGE_TRACE);
-      drawExitButtonTft();
-    }
-    return;
-  }
-
-  uint16_t impactIndex = traceImpactIndex;
-  bool hasImpactPoint = lastResult.impactDetected && impactIndex >= startIndex && impactIndex < traceCount;
-  if (!hasImpactPoint) {
-    impactIndex = startIndex + (traceCount - startIndex) / 2;
-  }
-
-  float centerRefX = hasImpactPoint ? tracePoints[impactIndex].x : 0.0f;
-  float centerRefY = hasImpactPoint ? tracePoints[impactIndex].y : 0.0f;
-  if (!hasImpactPoint) {
-    for (uint16_t i = startIndex; i < traceCount; i++) {
-      centerRefX += tracePoints[i].x;
-      centerRefY += tracePoints[i].y;
-    }
-    float denom = (float)(traceCount - startIndex);
-    centerRefX /= denom;
-    centerRefY /= denom;
-  }
-
-  float minRelX = 0.0f;
-  float maxRelX = 0.0f;
-  float minRelY = 0.0f;
-  float maxRelY = 0.0f;
-  for (uint16_t i = startIndex; i < traceCount; i++) {
-    float relX = tracePoints[i].x - centerRefX;
-    float relY = tracePoints[i].y - centerRefY;
-    if (relX < minRelX) minRelX = relX;
-    if (relX > maxRelX) maxRelX = relX;
-    if (relY < minRelY) minRelY = relY;
-    if (relY > maxRelY) maxRelY = relY;
-  }
-
-  float spanX = maxRelX - minRelX;
-  float spanY = maxRelY - minRelY;
-  if (spanX < 0.02f) spanX = 0.02f;
-  if (spanY < 0.02f) spanY = 0.02f;
-
-  float scale = 68.0f / (spanX > spanY ? spanX : spanY);
-  if (scale > 260.0f) {
-    scale = 260.0f;
-  }
-
-  int16_t ballX = 120;
-  int16_t ballY = 118;
-  float pathDx = tracePoints[traceCount - 1].x - tracePoints[startIndex].x;
-  float xSign = pathDx < 0.0f ? -1.0f : 1.0f;
-
-  safeDrawLine(52, ballY, 188, ballY, TFT_DARKGREY);
-  safeDrawLine(ballX, 64, ballX, 170, TFT_DARKGREY);
-
-  uint16_t pointCount = traceCount - startIndex;
-  uint16_t step = pointCount > 24 ? pointCount / 24 : 1;
-  int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].x - centerRefX) * xSign * scale);
-  int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].y - centerRefY) * scale);
-  for (uint16_t i = startIndex + step; i < traceCount; i += step) {
-    int16_t x = ballX + (int16_t)((tracePoints[i].x - centerRefX) * xSign * scale);
-    int16_t y = ballY + (int16_t)((tracePoints[i].y - centerRefY) * scale);
-    uint16_t color = hasImpactPoint && i < impactIndex ? TFT_DARKGREEN : TFT_GREEN;
-    safeDrawLine(prevX, prevY, x, y, color);
-    prevX = x;
-    prevY = y;
-  }
-
-  if (hasImpactPoint) {
-    uint16_t pathStartIndex = impactIndex > startIndex ? impactIndex - 1 : startIndex;
-    uint16_t pathEndIndex = impactIndex + 1 < traceCount ? impactIndex + 1 : traceCount - 1;
-    float pathVectorX = (tracePoints[pathStartIndex].x - tracePoints[pathEndIndex].x) * xSign;
-    float pathVectorY = tracePoints[pathStartIndex].y - tracePoints[pathEndIndex].y;
-    if (fabsf(pathVectorX) < 0.0001f && fabsf(pathVectorY) < 0.0001f) {
-      pathVectorX = (tracePoints[startIndex].x - tracePoints[traceCount - 1].x) * xSign;
-      pathVectorY = tracePoints[startIndex].y - tracePoints[traceCount - 1].y;
-    }
-
-    float faceRad = atan2f(pathVectorY, pathVectorX) + lastResult.faceAngleImpactDeg * DEG_TO_RAD_F;
-    int16_t launchX = ballX + (int16_t)(cosf(faceRad) * 58.0f);
-    int16_t launchY = ballY + (int16_t)(sinf(faceRad) * 58.0f);
-    safeDrawLine(ballX, ballY, launchX, launchY, TFT_SKYBLUE);
-    activeFillCircle(clampScreenCoord(launchX), clampScreenCoord(launchY), 3, TFT_SKYBLUE);
-
-    float normalX = cosf(faceRad);
-    float normalY = sinf(faceRad);
-    float tangentX = -normalY;
-    float tangentY = normalX;
-    int16_t faceCx = ballX - (int16_t)(normalX * 14.0f);
-    int16_t faceCy = ballY - (int16_t)(normalY * 14.0f);
-    int16_t faceX0 = faceCx - (int16_t)(tangentX * 22.0f);
-    int16_t faceY0 = faceCy - (int16_t)(tangentY * 22.0f);
-    int16_t faceX1 = faceCx + (int16_t)(tangentX * 22.0f);
-    int16_t faceY1 = faceCy + (int16_t)(tangentY * 22.0f);
-    safeDrawLine(faceX0, faceY0, faceX1, faceY1, TFT_WHITE);
-    safeDrawLine(faceX0 - (int16_t)(normalX * 8.0f), faceY0 - (int16_t)(normalY * 8.0f),
-                 faceX1 - (int16_t)(normalX * 8.0f), faceY1 - (int16_t)(normalY * 8.0f),
-                 TFT_LIGHTGREY);
-
-    activeFillCircle(ballX, ballY, 8, TFT_WHITE);
-    activeDrawCircle(ballX, ballY, 8, TFT_DARKGREY);
-    activeFillCircle(ballX, ballY, 3, TFT_RED);
-  }
-
-  if (screenSpriteReady) {
-    drawPageDotsSprite(RESULT_PAGE_TRACE);
-    drawExitButtonSprite();
-    screenSprite.pushSprite(0, 0);
+    drawCenteredSprite("No trace", 112, 2, TFT_WHITE);
   } else {
-    drawPageDotsTft(RESULT_PAGE_TRACE);
-    drawExitButtonTft();
+    uint16_t impactIndex = traceImpactIndex;
+    bool hasImpactPoint = lastResult.impactDetected && impactIndex >= startIndex && impactIndex < traceCount;
+    if (!hasImpactPoint) {
+      impactIndex = startIndex + (traceCount - startIndex) / 2;
+    }
+
+    float centerRefX = hasImpactPoint ? tracePoints[impactIndex].x : 0.0f;
+    float centerRefY = hasImpactPoint ? tracePoints[impactIndex].y : 0.0f;
+    if (!hasImpactPoint) {
+      for (uint16_t i = startIndex; i < traceCount; i++) {
+        centerRefX += tracePoints[i].x;
+        centerRefY += tracePoints[i].y;
+      }
+      float denom = (float)(traceCount - startIndex);
+      centerRefX /= denom;
+      centerRefY /= denom;
+    }
+
+    float minRelX = 0.0f;
+    float maxRelX = 0.0f;
+    float minRelY = 0.0f;
+    float maxRelY = 0.0f;
+    for (uint16_t i = startIndex; i < traceCount; i++) {
+      float relX = tracePoints[i].x - centerRefX;
+      float relY = tracePoints[i].y - centerRefY;
+      if (relX < minRelX) minRelX = relX;
+      if (relX > maxRelX) maxRelX = relX;
+      if (relY < minRelY) minRelY = relY;
+      if (relY > maxRelY) maxRelY = relY;
+    }
+
+    float spanX = maxRelX - minRelX;
+    float spanY = maxRelY - minRelY;
+    if (spanX < 0.02f) spanX = 0.02f;
+    if (spanY < 0.02f) spanY = 0.02f;
+
+    float scale = 70.0f / (spanX > spanY ? spanX : spanY);
+    if (scale > 260.0f) {
+      scale = 260.0f;
+    }
+
+    float pathDx = tracePoints[traceCount - 1].x - tracePoints[startIndex].x;
+    float xSign = pathDx < 0.0f ? -1.0f : 1.0f;
+
+    // Clubhead arc polyline in white, faked 2px by drawing twice offset 1px in x.
+    uint16_t pointCount = traceCount - startIndex;
+    uint16_t step = pointCount > 24 ? pointCount / 24 : 1;
+    int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].x - centerRefX) * xSign * scale);
+    int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].y - centerRefY) * scale);
+    for (uint16_t i = startIndex + step; i < traceCount; i += step) {
+      int16_t x = ballX + (int16_t)((tracePoints[i].x - centerRefX) * xSign * scale);
+      int16_t y = ballY + (int16_t)((tracePoints[i].y - centerRefY) * scale);
+      safeDrawLine(prevX, prevY, x, y, TFT_WHITE);
+      safeDrawLine(prevX + 1, prevY, x + 1, y, TFT_WHITE);
+      prevX = x;
+      prevY = y;
+    }
+
+    // Small amber dot at the impact index on the arc.
+    int16_t impX = ballX + (int16_t)((tracePoints[impactIndex].x - centerRefX) * xSign * scale);
+    int16_t impY = ballY + (int16_t)((tracePoints[impactIndex].y - centerRefY) * scale);
+    activeFillCircle(clampScreenCoord(impX), clampScreenCoord(impY), 3, UI_AMBER);
   }
+
+  // Amber impact point at the ball / center.
+  activeFillCircle(ballX, ballY, 5, UI_AMBER);
+
+  // FACE chip (top).
+  drawCenteredSprite("FACE", 66, 1, TFT_DARKGREY);
+  drawCenteredSprite(faceVal, 80, 2, UI_AMBER);
+
+  // TEMPO chip (bottom).
+  drawCenteredSprite(tempoVal, 150, 2, TFT_WHITE);
+  drawCenteredSprite("TEMPO", 170, 1, TFT_DARKGREY);
+
+  drawPageDotsSprite(RESULT_PAGE_TRACE);
+  drawExitButtonSprite();
+  screenSprite.pushSprite(0, 0);
 }
 
-static void showStatsPage() {
-  char durationLine[24];
-  char motionLine[24];
-  char impactLine[24];
-  char faceLine[24];
-  snprintf(durationLine, sizeof(durationLine), "%lu ms",
-           (unsigned long)lastResult.durationMs);
-  snprintf(motionLine, sizeof(motionLine), "G %.0f  A %.1f",
-           lastResult.maxGyroDps, lastResult.maxLinearMps2);
-  if (lastResult.impactDetected) {
-    snprintf(impactLine, sizeof(impactLine), "Impact %ld ms",
-             (long)lastResult.impactOffsetMs);
-  } else {
-    snprintf(impactLine, sizeof(impactLine), "Impact --");
-  }
-  snprintf(faceLine, sizeof(faceLine), "F %.1f  P %.1f",
-           lastResult.faceAngleImpactDeg - faceZeroDeg,
-           lastResult.pathAngleImpactDeg - pathZeroDeg);
+// DETAILS page: consolidated numbers stacked within the safe circle, plus ZERO.
+static void showDetailsPage() {
+  char faceVal[12];
+  formatFaceRL(faceVal, sizeof(faceVal), lastResult.faceAngleImpactDeg - faceZeroDeg);
 
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCenteredSprite("STATS", 36, 2, TFT_CYAN);
-    drawCenteredSprite(durationLine, 72, 2, TFT_WHITE);
-    drawCenteredSprite(motionLine, 106, 2, TFT_WHITE);
-    drawCenteredSprite(impactLine, 138, 2, TFT_LIGHTGREY);
-    drawCenteredSprite(faceLine, 164, 1, TFT_LIGHTGREY);
-    drawCenteredSprite("[ZERO]", 178, 1, TFT_DARKGREY);
-    drawPageDotsSprite(RESULT_PAGE_STATS);
-    drawExitButtonSprite();
-    screenSprite.pushSprite(0, 0);
+  float pathDeg = lastResult.pathAngleImpactDeg - pathZeroDeg;
+  char pathVal[16];
+  snprintf(pathVal, sizeof(pathVal), "%.1f %s", fabsf(pathDeg), pathDeg >= 0.0f ? "OUT" : "IN");
+
+  char tempoVal[12];
+  snprintf(tempoVal, sizeof(tempoVal), "%.1f:1", lastResult.tempo);
+
+  char bfVal[20];
+  snprintf(bfVal, sizeof(bfVal), "%lu/%lu",
+           (unsigned long)lastResult.backswingMs,
+           (unsigned long)lastResult.forwardMs);
+
+  char durVal[16];
+  snprintf(durVal, sizeof(durVal), "%lu ms", (unsigned long)lastResult.durationMs);
+
+  char impactVal[16];
+  if (lastResult.impactDetected) {
+    snprintf(impactVal, sizeof(impactVal), "%+ld", (long)lastResult.impactOffsetMs);
+  } else {
+    snprintf(impactVal, sizeof(impactVal), "--");
+  }
+
+  char rows[6][28];
+  snprintf(rows[0], sizeof(rows[0]), "%-6s %s", "FACE", faceVal);
+  snprintf(rows[1], sizeof(rows[1]), "%-6s %s", "PATH", pathVal);
+  snprintf(rows[2], sizeof(rows[2]), "%-6s %s", "TEMPO", tempoVal);
+  snprintf(rows[3], sizeof(rows[3]), "%-6s %s", "B/F", bfVal);
+  snprintf(rows[4], sizeof(rows[4]), "%-6s %s", "DUR", durVal);
+  snprintf(rows[5], sizeof(rows[5]), "%-6s %s", "IMPACT", impactVal);
+
+  if (!screenSpriteReady) {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCentered("DETAILS", 44, 1, UI_GREY);
+    for (uint8_t i = 0; i < 6; i++) {
+      drawCentered(rows[i], 64 + i * 18, 1, TFT_WHITE);
+    }
+    drawPageDotsTft(RESULT_PAGE_DETAILS);
+    drawExitButtonTft();
     return;
   }
 
-  tft.fillScreen(TFT_BLACK);
-  tft.drawCircle(120, 120, 112, TFT_CYAN);
-  drawCentered("STATS", 36, 2, TFT_CYAN);
-  drawCentered(durationLine, 72, 2, TFT_WHITE);
-  drawCentered(motionLine, 106, 2, TFT_WHITE);
-  drawCentered(impactLine, 138, 2, TFT_LIGHTGREY);
-  drawCentered(faceLine, 164, 1, TFT_LIGHTGREY);
-  drawCentered("[ZERO]", 178, 1, TFT_DARKGREY);
-  drawPageDotsTft(RESULT_PAGE_STATS);
-  drawExitButtonTft();
+  screenSprite.fillSprite(TFT_BLACK);
+  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+  drawCenteredSprite("DETAILS", 44, 1, UI_GREY);
+  for (uint8_t i = 0; i < 6; i++) {
+    drawCenteredSprite(rows[i], 64 + i * 18, 1, TFT_WHITE);
+  }
+  // ZERO pill.
+  screenSprite.drawRoundRect(86, 158, 68, 24, 12, UI_AMBER);
+  drawCenteredSprite("ZERO", 165, 1, UI_AMBER);
+  drawPageDotsSprite(RESULT_PAGE_DETAILS);
+  drawExitButtonSprite();
+  screenSprite.pushSprite(0, 0);
 }
 
 static void showResultPage() {
-  if (resultPage == RESULT_PAGE_TEMPO) {
-    showTempoPage();
-  } else if (resultPage == RESULT_PAGE_TRACE) {
-    showSafeImpactPage();
+  if (resultPage == RESULT_PAGE_TRACE) {
+    showTracePage();
   } else {
-    showStatsPage();
+    showDetailsPage();
   }
 }
 
@@ -1721,7 +1736,7 @@ static void finishSwing(uint32_t nowMs) {
     lastResult.faceAngleImpactDeg = swing.faceAngleImpactCaptured ? swing.faceAngleImpactDeg : swing.faceAngleDeg;
     lastResult.faceAngleImpactCaptured = swing.faceAngleImpactCaptured;
     lastResult.pathAngleImpactDeg = swing.pathAngleImpactDeg;
-    resultPage = RESULT_PAGE_TEMPO;
+    resultPage = RESULT_PAGE_TRACE;
     impactReplayFrame = 0;
     impactReplayLastMs = 0;
     resultPageShownMs = nowMs;
@@ -1729,6 +1744,7 @@ static void finishSwing(uint32_t nowMs) {
     state = SENSOR_RESULT_HOLD;
     stateSinceMs = nowMs;
     requireStillnessForReady = false;
+    showPuttSplash();
     showResultPage();
     printResult("PUTT_DETECTED", nullptr, nowMs);
     logRawStrokeRecent(swing.startMs, nowMs);
@@ -1744,7 +1760,7 @@ static void finishSwing(uint32_t nowMs) {
 }
 
 static void showFinalResult(uint32_t nowMs) {
-  resultPage = RESULT_PAGE_TEMPO;
+  resultPage = RESULT_PAGE_TRACE;
   resultPageShownMs = nowMs;
   showResultPage();
   state = SENSOR_RESULT_HOLD;
@@ -2391,9 +2407,9 @@ static void updateResultHold(uint32_t nowMs) {
     return;
   }
 
-  // "ZERO" on the stats page: null the face/path bias from this stroke.
-  if (resultPage == RESULT_PAGE_STATS && event.gesture == TOUCH_TAP &&
-      event.x >= 88 && event.x <= 152 && event.y >= 172 && event.y <= 184) {
+  // "ZERO" on the details page: null the face/path bias from this stroke.
+  if (resultPage == RESULT_PAGE_DETAILS && event.gesture == TOUCH_TAP &&
+      event.x >= 80 && event.x <= 160 && event.y >= 154 && event.y <= 186) {
     faceZeroDeg = lastResult.faceAngleImpactDeg;
     pathZeroDeg = lastResult.pathAngleImpactDeg;
     showResultPage();
