@@ -214,6 +214,29 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
     add_pressed_feedback(tm, false);
 }
 
+// Small grey gear affordance at bottom-center -> opens the Config screen.
+// Built-in LVGL gear glyph (baked into the Montserrat fonts). Expanded tap area
+// so the effective target is >=44pt. Used on BOTH home variants.
+static void build_config_gear(lv_obj_t* scr, int y)
+{
+    lv_obj_t* btn = lv_obj_create(scr);
+    lv_obj_set_size(btn, 36, 28);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, y - CY);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(btn, 12);   // 28 + 2*12 = 52pt effective tap height
+    make_clickable(btn, UI_EVT_CONFIG);
+    add_pressed_feedback(btn, false);
+
+    lv_obj_t* g = lv_label_create(btn);
+    lv_label_set_text(g, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_font(g, FONT_CAPTION, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g, lv_color_hex(COL_GREY), LV_PART_MAIN);
+    lv_obj_center(g);
+}
+
 void ui_build_home(lv_obj_t* scr, bool autoMode)
 {
     bg_black(scr);
@@ -246,6 +269,10 @@ void ui_build_home(lv_obj_t* scr, bool autoMode)
 
         label_at(scr, "tap to begin", FONT_CAPTION, COL_GREY, CX, 160);
     }
+
+    // Config (gear) affordance at bottom-center -> Config screen. Applies to
+    // both modes. Sits below the home content; clear of the toggle/listening/hint.
+    build_config_gear(scr, 208);
 }
 
 // ---- Countdown ------------------------------------------------------------
@@ -444,11 +471,10 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
 {
     bg_black(scr);
 
-    // Tap anywhere (outside ZERO) -> back to home/idle. Attached first so the
-    // ZERO button (added later, on top) wins its own taps.
+    // Tap anywhere -> page back to result.
     make_clickable(scr, UI_EVT_DETAILS_BODY);
 
-    label_at(scr, "DETAILS", FONT_CAPTION, COL_GREY, CX, 38);
+    label_at(scr, "DETAILS", FONT_CAPTION, COL_GREY, CX, 40);
 
     char face[16], path[16], tempo[16], bf[24], dur[16], imp[16];
     snprintf(face,  sizeof(face),  "%.1f%c", (double)r.faceDeg, r.faceLR);
@@ -458,8 +484,10 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     snprintf(dur,   sizeof(dur),   "%ums", (unsigned)r.durMs);
     snprintf(imp,   sizeof(imp),   "%+dms", r.impactOffMs);
 
-    int y = 50;
-    const int step = 14;
+    // Six rows, evenly spaced and vertically centered in the body now that ZERO
+    // is gone. Rows span y66..156 (step 18), leaving room for dots + EXIT below.
+    int y = 66;
+    const int step = 18;
     detail_row(scr, "FACE",   face,  y); y += step;
     detail_row(scr, "PATH",   path,  y); y += step;
     detail_row(scr, "TEMPO",  tempo, y); y += step;
@@ -467,11 +495,25 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     detail_row(scr, "DUR",    dur,   y); y += step;
     detail_row(scr, "IMPACT", imp,   y); y += step;
 
-    // [ZERO] button (enlarged for a comfortable touch target).
+    // Page indicator (details = dot 1) + EXIT affordance.
+    build_page_dots(scr, 1, 186);
+    build_exit_pill(scr, 214);
+}
+
+// ---- Config ---------------------------------------------------------------
+
+void ui_build_config(lv_obj_t* scr)
+{
+    bg_black(scr);
+
+    label_at(scr, "CONFIG", FONT_CAPTION, COL_GREY, CX, 40);
+    label_at(scr, "Hold level, then tap", FONT_CAPTION, COL_GREY, CX, 78);
+
+    // Large ZERO button (same visual as the old details ZERO).
     lv_obj_t* btn = lv_obj_create(scr);
-    lv_obj_set_size(btn, 90, 36);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 148 - CY);
-    lv_obj_set_style_radius(btn, 18, LV_PART_MAIN);
+    lv_obj_set_size(btn, 96, 40);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 120 - CY);
+    lv_obj_set_style_radius(btn, 20, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_color(btn, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
@@ -487,7 +529,8 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     lv_obj_set_style_text_color(z, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_center(z);
 
-    // Page indicator (details = dot 1) + EXIT affordance.
-    build_page_dots(scr, 1, 182);
+    label_at(scr, "sets face/path zero", FONT_CAPTION, COL_GREY, CX, 150);
+
+    // EXIT -> home.
     build_exit_pill(scr, 212);
 }

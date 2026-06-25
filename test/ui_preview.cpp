@@ -142,5 +142,8 @@ int main(void)
     s = lv_obj_create(NULL); ui_build_details(s, r);
     rc |= render_png(s, "build/screen_details.png");
 
+    s = lv_obj_create(NULL); ui_build_config(s);
+    rc |= render_png(s, "build/screen_config.png");
+
     return rc;
 }

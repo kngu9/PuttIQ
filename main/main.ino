@@ -156,7 +156,7 @@ static const uint32_t MANUAL_COUNTDOWN_MS = 5000;
 // LVGL screen request enum. Declared up here (not next to the LVGL helpers) so
 // the Arduino auto-prototype generator sees the type before any prototype that
 // uses it.
-enum UiScreen { UI_NONE, UI_HOME, UI_COUNTDOWN, UI_RESULT, UI_DETAILS, UI_NOIMU, UI_SETTLING };
+enum UiScreen { UI_NONE, UI_HOME, UI_COUNTDOWN, UI_RESULT, UI_DETAILS, UI_CONFIG, UI_NOIMU, UI_SETTLING };
 
 // Vec3 now comes from imu_types.h (shared with the new detector modules).
 
@@ -1306,6 +1306,9 @@ static lv_obj_t* ui_build_screen(UiScreen s) {
     case UI_DETAILS:
       ui_build_details(scr, g_uiResult);
       break;
+    case UI_CONFIG:
+      ui_build_config(scr);
+      break;
     case UI_NOIMU: {
       lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
       lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
@@ -1382,13 +1385,17 @@ static void ui_on_click(int id) {
       if (g_haveLastResult) {
         faceZeroDeg = g_lastRawFaceDeg;
         pathZeroDeg = g_lastRawPathDeg;
-        // Recompute the displayed result against the new zero, rebuild details.
+        // Recompute the displayed result against the new zero.
         g_uiResult.faceDeg = fabsf(g_lastRawFaceDeg - faceZeroDeg);
         g_uiResult.faceLR  = (g_lastRawFaceDeg - faceZeroDeg) >= 0.0f ? 'R' : 'L';
         g_uiResult.pathDeg = fabsf(g_lastRawPathDeg - pathZeroDeg);
         g_uiResult.pathOut = (g_lastRawPathDeg - pathZeroDeg) >= 0.0f;
-        ui_request(UI_DETAILS, true);
       }
+      // ZERO now lives on the Config screen; stay on Config after calibrating.
+      ui_request(UI_CONFIG, true);
+      break;
+    case UI_EVT_CONFIG:
+      ui_request(UI_CONFIG, true);
       break;
     case UI_EVT_RESULT_BODY:
       if (state == SENSOR_RESULT_HOLD) {
@@ -1401,7 +1408,9 @@ static void ui_on_click(int id) {
       }
       break;
     case UI_EVT_EXIT:
-      if (state == SENSOR_RESULT_HOLD) {
+      // Shared EXIT affordance. From result/details (RESULT_HOLD) it dismisses
+      // the result; from Config it returns to home. Either way -> idle/home.
+      if (state == SENSOR_RESULT_HOLD || g_uiCur == UI_CONFIG) {
         enterIdle(nowMs);            // auto: re-arm; manual: back to home
       }
       break;

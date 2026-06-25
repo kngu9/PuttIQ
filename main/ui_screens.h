@@ -43,7 +43,8 @@ enum UiEventId {
     UI_EVT_ZERO,           // details-page ZERO button
     UI_EVT_RESULT_BODY,    // result screen background (advance to details)
     UI_EVT_DETAILS_BODY,   // details screen background (page back to result)
-    UI_EVT_EXIT            // EXIT affordance on result/details (back to home/idle)
+    UI_EVT_EXIT,           // EXIT affordance on result/details (back to home/idle)
+    UI_EVT_CONFIG          // gear/CONFIG affordance on home (open config screen)
 };
 
 // Optional click dispatcher. When non-null, the builders attach an
@@ -57,6 +58,7 @@ void ui_build_home(lv_obj_t* scr, bool autoMode);
 void ui_build_countdown(lv_obj_t* scr, int secs, int totalSecs);
 void ui_build_result(lv_obj_t* scr, const UiResult& r);
 void ui_build_details(lv_obj_t* scr, const UiResult& r);
+void ui_build_config(lv_obj_t* scr);
 
 #ifdef __cplusplus
 }
