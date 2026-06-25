@@ -824,8 +824,9 @@ static void showTracePage() {
 
   screenSprite.fillSprite(TFT_BLACK);
   screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-  // Straight-stroke reference (faint vertical line through center).
-  safeDrawLine(120, 60, 120, 178, TFT_DARKGREY);
+  // Straight-stroke reference: the stroke runs HORIZONTALLY (approach left ->
+  // follow-through right), so the target line is the faint horizontal line.
+  safeDrawLine(56, 120, 184, 120, TFT_DARKGREY);
 
   int16_t ballX = 120;
   int16_t ballY = 120;
@@ -875,22 +876,24 @@ static void showTracePage() {
       scale = 260.0f;
     }
 
-    float pathDx = tracePoints[traceCount - 1].x - tracePoints[startIndex].x;
-    float xSign = pathDx < 0.0f ? -1.0f : 1.0f;
+    // Stroke runs horizontally: forward-along-target maps to screen X (so the
+    // follow-through travels to the right), lateral maps to screen Y.
+    float pathDy = tracePoints[traceCount - 1].y - tracePoints[startIndex].y;
+    float fwdSign = pathDy < 0.0f ? -1.0f : 1.0f;
 
-    // Clubhead arc polyline, faked 2px by drawing twice offset 1px in x.
+    // Clubhead arc polyline, faked 2px by drawing twice offset 1px in y.
     // Approach (before impact) is dim grey; follow-through (after) is white, so
     // the eye follows the stroke INTO the ball.
     uint16_t pointCount = traceCount - startIndex;
     uint16_t step = pointCount > 24 ? pointCount / 24 : 1;
-    int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].x - centerRefX) * xSign * scale);
-    int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].y - centerRefY) * scale);
+    int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].y - centerRefY) * fwdSign * scale);
+    int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].x - centerRefX) * scale);
     for (uint16_t i = startIndex + step; i < traceCount; i += step) {
-      int16_t x = ballX + (int16_t)((tracePoints[i].x - centerRefX) * xSign * scale);
-      int16_t y = ballY + (int16_t)((tracePoints[i].y - centerRefY) * scale);
+      int16_t x = ballX + (int16_t)((tracePoints[i].y - centerRefY) * fwdSign * scale);
+      int16_t y = ballY + (int16_t)((tracePoints[i].x - centerRefX) * scale);
       uint16_t color = (i <= impactIndex) ? UI_GREY : TFT_WHITE;
       safeDrawLine(prevX, prevY, x, y, color);
-      safeDrawLine(prevX + 1, prevY, x + 1, y, color);
+      safeDrawLine(prevX, prevY + 1, x, y + 1, color);
       prevX = x;
       prevY = y;
     }
