@@ -1280,6 +1280,9 @@ static void ui_request(UiScreen s, bool force = false) {
 // Build a fresh screen object for `s` and populate it.
 static lv_obj_t* ui_build_screen(UiScreen s) {
   lv_obj_t* scr = lv_obj_create(NULL);
+  // Screens are static instrument faces — never scroll/bounce (LVGL default on).
+  lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
   switch (s) {
     case UI_HOME:
       // Show the "listening" (auto-style) face whenever we're armed and waiting

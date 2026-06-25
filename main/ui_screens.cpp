@@ -242,10 +242,13 @@ static void build_trace(lv_obj_t* scr, const UiResult& r, int boxPx, int& impX, 
     float midX = (minX + maxX) * 0.5f;
     float midY = (minY + maxY) * 0.5f;
 
+    // The stroke runs HORIZONTALLY: forward-along-target (traceY) maps to screen
+    // X (approach left -> follow-through right); lateral (traceX) maps to screen Y.
+    float fwdSign = (r.traceY[n - 1] - r.traceY[0]) < 0.0f ? -1.0f : 1.0f;
+
     auto toPx = [&](int i, lv_point_precise_t& p) {
-        // Center the data, scale, flip Y (screen Y grows downward).
-        int px = CX + (int)((r.traceX[i] - midX) * scale + 0.5f);
-        int py = CY - (int)((r.traceY[i] - midY) * scale + 0.5f);
+        int px = CX + (int)((r.traceY[i] - midY) * scale * fwdSign + 0.5f);
+        int py = CY + (int)((r.traceX[i] - midX) * scale + 0.5f);
         p.x = px;
         p.y = py;
     };

@@ -90,13 +90,14 @@ static float traceY[TRACE_N];
 
 static void make_sample_trace(void)
 {
+    // Match real PuttResult head-trace convention: traceY = forward sweep along
+    // the target line (large range), traceX = small lateral arc (the curvature).
     for (int i = 0; i < TRACE_N; i++) {
         float t = (float)i / (float)(TRACE_N - 1);   // 0..1
-        float x = -0.6f + 1.2f * t;                   // -0.6..+0.6
-        // Gentle parabola: low in the middle (arc bottom), units arbitrary.
-        float y = 0.12f * (x * x) - 0.02f;
-        traceX[i] = x;
-        traceY[i] = y;
+        float fwd = -0.6f + 1.2f * t;                 // forward sweep -> traceY
+        float lat = 0.12f * (fwd * fwd) - 0.02f;      // gentle lateral arc -> traceX
+        traceX[i] = lat;
+        traceY[i] = fwd;
     }
 }
 
