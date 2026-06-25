@@ -22,10 +22,17 @@ DerivedSample Preprocessor::process(const RawSample &raw) {
               raw.ay * ACCEL_G_PER_LSB * G,
               raw.az * ACCEL_G_PER_LSB * G };
 
-  // Gyro bias (slow EMA toward the resting value).
-  if (!biasReady_) { gyroBias_ = gyroRaw; biasReady_ = true; }
-  else gyroBias_ = add3(scale3(gyroBias_, 1.0f - cfg_.gyroBiasAlpha),
-                        scale3(gyroRaw, cfg_.gyroBiasAlpha));
+  // Gyro bias: adapt only while still, so a stroke can't pollute the bias
+  // (which otherwise overshoots and produces a phantom post-stroke bounce).
+  if (!biasReady_) {
+    gyroBias_ = gyroRaw; biasReady_ = true;
+  } else {
+    float motionDps = mag3(sub3(gyroRaw, gyroBias_)) * RAD_TO_DEG;
+    if (motionDps < cfg_.biasStillDps) {
+      gyroBias_ = add3(scale3(gyroBias_, 1.0f - cfg_.gyroBiasAlpha),
+                       scale3(gyroRaw, cfg_.gyroBiasAlpha));
+    }
+  }
 
   // Bias-corrected + low-pass filtered gyro.
   Vec3 corrected = sub3(gyroRaw, gyroBias_);

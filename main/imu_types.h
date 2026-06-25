@@ -43,6 +43,7 @@ struct DetectorConfig {
   float gravityAlpha    = 0.04f;
   float gravityMinMps2  = 7.0f;
   float gravityMaxMps2  = 12.5f;
+  float biasStillDps    = 6.0f;    // freeze bias adaptation above this motion
   // Candidate windowing
   float candidateRiseDps = 4.0f;   // motion floor that opens a candidate
   float candidateQuietDps = 2.0f;  // below this = quiet
@@ -55,7 +56,7 @@ struct DetectorConfig {
   int   maxReversals = 3;
   float maxLinAngRatio = 0.6f;
   float minPeakForwardDps = 8.0f;
-  float minBellRatio = 1.5f;
+  float minBellRatio = 1.2f;  // a clean half-sine forward stroke is ~1.4; 1.5 rejected all smooth strokes
   uint32_t minPreStillMs = 120;
   uint32_t minPostSettleMs = 120;
   bool  requireImpact = false;     // flipped on later if data supports it

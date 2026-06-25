@@ -35,8 +35,24 @@ static void test_gyro_scaling() {
   CHECK_NEAR(d.gyroDps, 100.0f, 1.0f);
 }
 
+static void test_no_post_motion_bounce() {
+  Preprocessor pp{DetectorConfig{}};
+  uint32_t t = 0;
+  for (int i = 0; i < 400; ++i) { pp.process(rest(t)); t += 5000; }
+  const int16_t r = (int16_t)(40.0f / 0.0175f);  // 40 dps on X
+  for (int i = 0; i < 40; ++i) {
+    pp.process(RawSample{t, r, 0, 0, 0, 0, (int16_t)(1.0f/0.000122f)}); t += 5000;
+  }
+  // Motion stops; with bias frozen during the stroke, gyroDps must fall below
+  // the quiet threshold within ~75 ms (no negative-overshoot bounce).
+  DerivedSample d{};
+  for (int i = 0; i < 15; ++i) { d = pp.process(rest(t)); t += 5000; }
+  CHECK(d.gyroDps < 2.0f);
+}
+
 int main() {
   RUN(test_rest_settles);
   RUN(test_gyro_scaling);
+  RUN(test_no_post_motion_bounce);
   REPORT();
 }
