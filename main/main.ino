@@ -12,14 +12,15 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "driver.h"
-#define USE_TFT_ESPI_LIBRARY
-#include <lv_xiao_round_screen.h>
+#include <TFT_eSPI.h>     // TFT_WIDTH/TFT_HEIGHT/TFT_BL macros for printDisplayConfig().
+                          // The `tft` instance + LVGL pipeline now live in ui.cpp.
 #include <Wire.h>
 #include <math.h>
 #include <nrf.h>
 #include "putt_detector.h"
 #include "putt_orientation.h"
 #include "ui_screens.h"  // LVGL v9.5 screen builders (ui_build_home, etc.)
+#include "ui.h"          // on-device LVGL pipeline + shared UI data (ui_init/apply/request, UiScreen)
 #include "imu_driver.h"  // LSM6DS3 IMU hardware driver (ImuSample/RawImuCounts, beginImu/readImu, imuReady)
 
 // New impact-triggered detector (runs alongside the legacy path for live eval).
@@ -137,10 +138,7 @@ enum SensorState {
 enum AppMode { MODE_AUTO, MODE_MANUAL };
 static const uint32_t MANUAL_COUNTDOWN_MS = 5000;
 
-// LVGL screen request enum. Declared up here (not next to the LVGL helpers) so
-// the Arduino auto-prototype generator sees the type before any prototype that
-// uses it.
-enum UiScreen { UI_NONE, UI_HOME, UI_COUNTDOWN, UI_RESULT, UI_DETAILS, UI_CONFIG, UI_NOIMU, UI_SETTLING };
+// enum UiScreen moved to ui.h (shared by ui.cpp + main.ino).
 
 // Vec3 now comes from imu_types.h (shared with the new detector modules).
 // ImuSample / RawImuCounts now come from imu_driver.h.
@@ -217,19 +215,6 @@ struct LastResult {
   float pathAngleImpactDeg;
 };
 
-enum TouchGesture {
-  TOUCH_NONE,
-  TOUCH_TAP,
-  TOUCH_SWIPE_LEFT,
-  TOUCH_SWIPE_RIGHT
-};
-
-struct TouchEvent {
-  TouchGesture gesture;
-  int16_t x;
-  int16_t y;
-};
-
 struct TracePoint {
   float x;
   float y;
@@ -270,14 +255,6 @@ static uint32_t lastImuRetryMs = 0;
 static uint32_t readyStillSinceMs = 0;
 static bool requireStillnessForReady = true;
 static bool serialWasConnected = false;
-static bool touchWasPressed = false;
-static bool gestureWasPressed = false;
-static bool gestureFiredDuringPress = false;
-static int16_t gestureStartX = 0;
-static int16_t gestureStartY = 0;
-static int16_t gestureLastX = 0;
-static int16_t gestureLastY = 0;
-static uint32_t gestureStartMs = 0;
 static uint32_t resultPageShownMs = 0;
 static float readyPeakGyroDps = 0.0f;
 static uint8_t readyStartCount = 0;
@@ -285,8 +262,6 @@ static bool armedCaptureEvaluation = false;
 static bool fsmArmed = false;
 static ResultPage resultPage = RESULT_PAGE_TRACE;
 static LastResult lastResult = {0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, false, -1, 0.0f, false};
-
-static bool displayReady = false;
 
 static float mag3(const Vec3 &v) {
   return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -371,203 +346,19 @@ static uint32_t clampU32(uint32_t value, uint32_t low, uint32_t high) {
   return value;
 }
 
-static void drawCentered(const char *text, int16_t y, uint8_t size, uint16_t color) {
-  if (!displayReady) {
-    return;
-  }
-
-  int16_t x1 = 0;
-  int16_t y1 = 0;
-  uint16_t w = 0;
-  uint16_t h = 0;
-  tft.setTextSize(size);
-  w = tft.textWidth(text);
-  tft.setCursor((240 - (int16_t)w) / 2, y);
-  tft.setTextColor(color);
-  tft.print(text);
-}
-
-static void drawExitButtonTft() {
-  tft.drawRoundRect(78, 198, 84, 26, 13, TFT_DARKGREY);
-  drawCentered("EXIT", 205, 1, TFT_LIGHTGREY);
-}
-
-static bool isExitButtonTap(const TouchEvent &event) {
-  return event.gesture == TOUCH_TAP &&
-         event.x >= 66 && event.x <= 174 &&
-         event.y >= 184 && event.y <= 236;
-}
-
-static void initTouchButton() {
-#if defined(TOUCH_INT)
-  pinMode(TOUCH_INT, INPUT_PULLUP);
-#endif
-  Wire.begin();
-}
-
-static bool touchButtonPressed() {
-#if defined(TOUCH_INT)
-  return digitalRead(TOUCH_INT) == LOW;
-#else
-  return false;
-#endif
-}
-
-static bool touchButtonTapped() {
-  bool pressed = touchButtonPressed();
-  bool tapped = pressed && !touchWasPressed;
-  touchWasPressed = pressed;
-  return tapped;
-}
-
-static bool readTouchPoint(int16_t &x, int16_t &y) {
-#if defined(TOUCH_INT)
-  if (!chsc6x_is_pressed()) {
-    return false;
-  }
-
-  lv_coord_t tx = 120;
-  lv_coord_t ty = 100;
-  chsc6x_get_xy(&tx, &ty);
-  if (tx < 0 || tx >= 240 || ty < 0 || ty >= 240) {
-    tx = 120;
-    ty = 100;
-  }
-
-  x = (int16_t)tx;
-  y = (int16_t)ty;
-  return true;
-#else
-  (void)x;
-  (void)y;
-  return false;
-#endif
-}
-
-static TouchEvent pollTouchEvent(uint32_t nowMs) {
-  TouchEvent event = {TOUCH_NONE, gestureLastX, gestureLastY};
-  int16_t x = gestureLastX;
-  int16_t y = gestureLastY;
-  bool pressed = readTouchPoint(x, y);
-
-  if (pressed) {
-    gestureLastX = x;
-    gestureLastY = y;
-    if (!gestureWasPressed) {
-      gestureWasPressed = true;
-      gestureFiredDuringPress = false;
-      gestureStartX = x;
-      gestureStartY = y;
-      gestureStartMs = nowMs;
-    }
-
-    int16_t dx = gestureLastX - gestureStartX;
-    int16_t dy = gestureLastY - gestureStartY;
-    int16_t absDx = abs(dx);
-    int16_t absDy = abs(dy);
-    if (!gestureFiredDuringPress && absDx >= 18 && absDx > absDy * 0.75f) {
-      gestureFiredDuringPress = true;
-      event.x = gestureLastX;
-      event.y = gestureLastY;
-      event.gesture = dx < 0 ? TOUCH_SWIPE_LEFT : TOUCH_SWIPE_RIGHT;
-      return event;
-    }
-
-    return event;
-  }
-
-  if (!gestureWasPressed) {
-    return event;
-  }
-
-  gestureWasPressed = false;
-  if (gestureFiredDuringPress) {
-    gestureFiredDuringPress = false;
-    return event;
-  }
-
-  int16_t dx = gestureLastX - gestureStartX;
-  int16_t dy = gestureLastY - gestureStartY;
-  uint32_t heldMs = nowMs - gestureStartMs;
-  int16_t absDx = abs(dx);
-  int16_t absDy = abs(dy);
-  event.x = gestureLastX;
-  event.y = gestureLastY;
-
-  if (absDx >= 22 && absDx > absDy * 0.85f) {
-    event.gesture = dx < 0 ? TOUCH_SWIPE_LEFT : TOUCH_SWIPE_RIGHT;
-  } else if (absDx <= 34 && absDy <= 34 && heldMs <= 1200) {
-    event.gesture = TOUCH_TAP;
-  }
-
-  return event;
-}
-
-// ===========================================================================
-// LVGL v9.5 on-device pipeline (display flush + touch + tick).
-// The legacy TFT_eSPI immediate-mode UI functions are neutered (early-return)
-// so they don't fight LVGL for the panel. The app FSM still runs; this milestone
-// just proves the LVGL pipeline by rendering the home screen and reacting to a tap.
-// ===========================================================================
-static bool      g_lvglReady = false;
-static lv_display_t* g_disp  = nullptr;
-
-// Partial render buffer: 240 x 40 RGB565 = 19200 px = 38400 bytes.
-// If RAM overflows, shrink the row count (e.g. 240*24). See compile report.
-static lv_color_t g_lvbuf[240 * 40];
-
-// LVGL tick source.
-static uint32_t lv_millis_cb(void) { return millis(); }
-
-// Push a rendered area to the GC9A01 via TFT_eSPI.
-// NOTE: the `true` arg to pushColors() = byte-swap. LVGL emits little-endian
-// RGB565; if colors look wrong on the panel, toggle this flag FIRST.
-static void lv_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
-  uint32_t w = area->x2 - area->x1 + 1;
-  uint32_t h = area->y2 - area->y1 + 1;
-  tft.startWrite();
-  tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t*)px_map, w * h, true);
-  tft.endWrite();
-  lv_display_flush_ready(disp);
-}
-
-// Touch read (mirrors chsc6x_read in lv_xiao_round_screen.h, v9 signature).
-static void lv_touch_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
-  (void)indev;
-  if (!chsc6x_is_pressed()) {
-    data->state = LV_INDEV_STATE_RELEASED;
-    return;
-  }
-  lv_coord_t tx = 0, ty = 0;
-  chsc6x_get_xy(&tx, &ty);
-  data->point.x = tx;
-  data->point.y = ty;
-  data->state = LV_INDEV_STATE_PRESSED;
-}
-
 // ---------------------------------------------------------------------------
-// Safe deferred screen switching.
-//
-// THE #1 RULE: event callbacks NEVER build/load/delete LVGL screens. They only
-// set flags (g_uiReq, appMode, countdown start, ...). ui_apply() runs in loop()
-// AFTER lv_timer_handler() and does the actual build -> lv_screen_load ->
-// delete-old. Deleting a screen mid-event would free objects still being walked
-// by LVGL's dispatcher and freeze/crash the UI (the old demo bug).
-// (enum UiScreen is declared near the top of the file.)
+// The LVGL display/touch pipeline, the deferred screen-swap helpers
+// (ui_request/ui_build_screen/ui_apply), and the UI data globals
+// (g_uiCur/g_countdownSecs/g_countdownTotal/g_uiResult/g_traceX/Y, plus the
+// new g_uiHomeAuto) now live in ui.cpp (declared in ui.h). The legacy
+// immediate-mode TFT draw/touch helpers were dead code and were removed with
+// the move. Only the app<->UI policy (below) stays here.
 // ---------------------------------------------------------------------------
-static UiScreen g_uiCur = UI_NONE;
-static UiScreen g_uiReq = UI_NONE;
+
 // Config is a UI-only modal over the idle state (no backing FSM state). While
 // open, suppress the state->screen auto-sync and result pop-ups so it isn't
 // bounced back to home each loop.
 static bool g_inConfig = false;
-static bool     g_uiForce = false;     // rebuild even if requested == current
-static int      g_countdownSecs = 5;   // digit currently shown on UI_COUNTDOWN
-static int      g_countdownTotal = (int)(MANUAL_COUNTDOWN_MS / 1000);
-static UiResult g_uiResult;            // populated from g_putt on an accepted putt
-static float    g_traceX[TRACE_CAP];   // backing storage for g_uiResult.traceX/Y
-static float    g_traceY[TRACE_CAP];
 // Raw (un-zeroed) face/path of the last accepted putt, for the ZERO button.
 static float    g_lastRawFaceDeg = 0.0f;
 static float    g_lastRawPathDeg = 0.0f;
@@ -578,85 +369,6 @@ static void armForSwing(uint32_t nowMs);
 static void enterManualHome(uint32_t nowMs);
 static void enterIdle(uint32_t nowMs);
 static void resetBuffer();
-
-// Request a screen. Pass force=true to rebuild even when it's already current
-// (used for the toggle and ZERO, which change content of the same screen kind).
-static void ui_request(UiScreen s, bool force = false) {
-  g_uiReq = s;
-  if (force) {
-    g_uiForce = true;
-  }
-}
-
-// Build a fresh screen object for `s` and populate it.
-static lv_obj_t* ui_build_screen(UiScreen s) {
-  lv_obj_t* scr = lv_obj_create(NULL);
-  // Screens are static instrument faces — never scroll/bounce (LVGL default on).
-  lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
-  switch (s) {
-    case UI_HOME:
-      // Show the "listening" (auto-style) face whenever we're armed and waiting
-      // for a stroke (auto home, OR manual after the countdown). Show the manual
-      // START face only at the manual idle home (SENSOR_HOME).
-      ui_build_home(scr, /*autoMode=*/state != SENSOR_HOME);
-      break;
-    case UI_COUNTDOWN:
-      ui_build_countdown(scr, g_countdownSecs, g_countdownTotal);
-      break;
-    case UI_RESULT:
-      ui_build_result(scr, g_uiResult);
-      break;
-    case UI_DETAILS:
-      ui_build_details(scr, g_uiResult);
-      break;
-    case UI_CONFIG:
-      ui_build_config(scr);
-      break;
-    case UI_NOIMU: {
-      lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-      lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
-      lv_obj_t* l = lv_label_create(scr);
-      lv_label_set_text(l, "NO IMU");
-      lv_obj_set_style_text_color(l, lv_color_hex(0xFFB000), LV_PART_MAIN);
-      lv_obj_set_style_text_font(l, &lv_font_montserrat_28, LV_PART_MAIN);
-      lv_obj_center(l);
-      break;
-    }
-    case UI_SETTLING:
-    default: {
-      lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-      lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
-      lv_obj_t* l = lv_label_create(scr);
-      lv_label_set_text(l, "...");
-      lv_obj_set_style_text_color(l, lv_color_hex(0x888888), LV_PART_MAIN);
-      lv_obj_set_style_text_font(l, &lv_font_montserrat_28, LV_PART_MAIN);
-      lv_obj_center(l);
-      break;
-    }
-  }
-  return scr;
-}
-
-// Apply a pending screen request: build new, load it, delete the OLD active
-// screen. SAFE because this runs in loop(), never inside an event callback.
-static void ui_apply(void) {
-  if (g_uiReq == UI_NONE) {
-    return;
-  }
-  if (g_uiReq == g_uiCur && !g_uiForce) {
-    return;
-  }
-  g_uiForce = false;
-
-  lv_obj_t* old = lv_screen_active();
-  lv_obj_t* fresh = ui_build_screen(g_uiReq);
-  lv_screen_load(fresh);
-  if (old && old != fresh) {
-    lv_obj_delete(old);  // safe outside events
-  }
-  g_uiCur = g_uiReq;
-}
 
 // Click dispatch from ui_screens widgets. Flags ONLY — no screen ops here.
 static void ui_on_click(int id) {
@@ -837,43 +549,9 @@ static void buildLegacyUiResultRealtime(uint32_t nowMs) {
   ui_request(UI_RESULT, true);
 }
 
-static void initLvgl(void) {
-  lv_init();
-  lv_tick_set_cb(lv_millis_cb);
-
-  g_disp = lv_display_create(240, 240);
-  lv_display_set_buffers(g_disp, g_lvbuf, NULL, sizeof(g_lvbuf),
-                         LV_DISPLAY_RENDER_MODE_PARTIAL);
-  lv_display_set_flush_cb(g_disp, lv_flush_cb);
-
-  lv_indev_t* indev = lv_indev_create();
-  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-  lv_indev_set_read_cb(indev, lv_touch_read_cb);
-
-  // Route widget clicks (set in ui_screens.cpp) to our flag-only handler.
-  ui_click_fn = ui_on_click;
-
-  // Build the initial screen onto the default active screen.
-  lv_obj_t* scr = lv_screen_active();
-  ui_build_home(scr, appMode == MODE_AUTO);
-  g_uiCur = UI_HOME;
-  g_uiReq = UI_HOME;
-
-  g_lvglReady = true;
-}
-
-static void initDisplay() {
-  if (!USE_ROUND_DISPLAY) {
-    return;
-  }
-
-  screen_rotation = 0;
-  xiao_disp_init();          // tft.begin() + backlight + fillScreen
-  tft.setTextWrap(false);
-  displayReady = true;
-  initTouchButton();         // TOUCH_INT pinMode + Wire.begin()
-  initLvgl();                // LVGL pipeline + home screen
-}
+// initDisplay()/initLvgl() moved to ui.cpp as ui_init(). The widget click
+// handler (ui_on_click) is installed from setup() after ui_init() returns, since
+// the app<->UI policy stays in this file.
 
 // The hardware half of IMU bring-up (power/probe/configure) now lives in
 // imu_driver (beginImu). This wrapper keeps the application-state resets that
@@ -1073,6 +751,7 @@ static void armForSwing(uint32_t nowMs) {
   readyPeakGyroDps = 0.0f;
   readyStartCount = 0;
   fsmArmed = true;  // ready == armed: no separate stillness-arm step
+  g_uiHomeAuto = true;  // armed & listening -> show the auto/listening home face
 
   printReadyEvent(nowMs);
 }
@@ -1083,6 +762,7 @@ static void enterManualHome(uint32_t nowMs) {
   state = SENSOR_HOME;
   stateSinceMs = nowMs;
   fsmArmed = false;
+  g_uiHomeAuto = false;  // manual idle -> show the START home face
 }
 
 // In auto, arm immediately; in manual, drop to the manual home.
@@ -1813,7 +1493,10 @@ void setup() {
   Serial.println(FW_VERSION);
   printDisplayConfig();
 
-  initDisplay();
+  g_uiHomeAuto = (appMode == MODE_AUTO);  // boot mode -> initial home face
+  ui_init();                              // display + touch + LVGL (was initDisplay)
+  // Route widget clicks (set in ui_screens.cpp) to our flag-only handler.
+  ui_click_fn = ui_on_click;
   Serial.println(F("SETUP,stage=begin_imu"));
   startImuSession();
   Serial.println(imuReady ? F("SETUP,stage=imu_ready") : F("SETUP,stage=no_imu"));
@@ -1827,7 +1510,7 @@ void loop() {
   // LVGL milestone: drive the UI every iteration (cheap when idle). Must run
   // before the IMU sample-rate early-returns below so the panel keeps refreshing
   // and touch stays responsive.
-  if (g_lvglReady) {
+  if (ui_ready()) {
     lv_timer_handler();
   }
 
@@ -1844,7 +1527,7 @@ void loop() {
       startImuSession();
     }
     // Keep the UI alive (NO IMU screen) and process deferred swaps.
-    if (g_lvglReady) {
+    if (ui_ready()) {
       ui_sync_from_state(nowMs);
       ui_apply();
     }
