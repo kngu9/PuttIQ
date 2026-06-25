@@ -3,3 +3,4 @@ build/
 
 # Session/editor cruft
 .claude/
+test/ui_fonts/DSEG7.ttf

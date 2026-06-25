@@ -12,9 +12,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include "ui_screens.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 static const int W = 240;
 static const int H = 240;
@@ -57,44 +60,44 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     lv_display_flush_ready(disp);
 }
 
-static void build_test_screen(void)
+static lv_display_t *g_disp = nullptr;
+
+// Render whatever is on `s` and write it out as a PNG.
+static int render_png(lv_obj_t *s, const char *path)
 {
-    lv_obj_t *scr = lv_screen_active();
+    lv_screen_load(s);
+    memset(fb, 0, sizeof(fb));
+    for (int i = 0; i < 20; i++) {
+        g_ms += 16;
+        lv_timer_handler();
+    }
+    lv_refr_now(g_disp);
 
-    // Black background.
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    int ok = stbi_write_png(path, W, H, 3, fb, W * 3);
+    if (!ok) {
+        fprintf(stderr, "stbi_write_png failed for %s\n", path);
+        return 1;
+    }
+    printf("PREVIEW_OK %s\n", path);
+    return 0;
+}
 
-    const lv_color_t amber = lv_color_hex(0xFFB000);
+// Build the sample putting-arc trace: a mostly-horizontal sweep with slight
+// upward curvature, impact near index 30.
+static const int TRACE_N = 50;
+static float traceX[TRACE_N];
+static float traceY[TRACE_N];
 
-    // Arc: 0-270 deg sweep in amber.
-    lv_obj_t *arc = lv_arc_create(scr);
-    lv_obj_set_size(arc, 200, 200);
-    lv_obj_center(arc);
-    lv_arc_set_rotation(arc, 135);
-    lv_arc_set_bg_angles(arc, 0, 270);
-    lv_arc_set_angles(arc, 0, 200);
-    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);  // hide the draggable knob
-    lv_obj_set_style_arc_color(arc, lv_color_hex(0x303030), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc, amber, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(arc, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, 10, LV_PART_INDICATOR);
-
-    // Filled amber circle (small obj with full radius).
-    lv_obj_t *dot = lv_obj_create(scr);
-    lv_obj_set_size(dot, 40, 40);
-    lv_obj_align(dot, LV_ALIGN_CENTER, 0, 55);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(dot, amber, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
-
-    // Centered "PuttIQ" label in white, Montserrat 28.
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "PuttIQ");
-    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -20);
+static void make_sample_trace(void)
+{
+    for (int i = 0; i < TRACE_N; i++) {
+        float t = (float)i / (float)(TRACE_N - 1);   // 0..1
+        float x = -0.6f + 1.2f * t;                   // -0.6..+0.6
+        // Gentle parabola: low in the middle (arc bottom), units arbitrary.
+        float y = 0.12f * (x * x) - 0.02f;
+        traceX[i] = x;
+        traceY[i] = y;
+    }
 }
 
 int main(void)
@@ -102,29 +105,40 @@ int main(void)
     lv_init();
     lv_tick_set_cb(my_tick);
 
-    lv_display_t *disp = lv_display_create(W, H);
-    lv_display_set_buffers(disp, draw_buf, NULL, sizeof(draw_buf),
+    g_disp = lv_display_create(W, H);
+    lv_display_set_buffers(g_disp, draw_buf, NULL, sizeof(draw_buf),
                            LV_DISPLAY_RENDER_MODE_FULL);
-    lv_display_set_flush_cb(disp, flush_cb);
+    lv_display_set_flush_cb(g_disp, flush_cb);
 
-    memset(fb, 0, sizeof(fb));
+    make_sample_trace();
 
-    build_test_screen();
+    UiResult r;
+    memset(&r, 0, sizeof(r));
+    r.faceDeg = 1.2f; r.faceLR = 'R';
+    r.pathDeg = 0.5f; r.pathOut = true;
+    r.tempo = 2.1f;
+    r.backMs = 480; r.fwdMs = 230; r.durMs = 710;
+    r.impactOffMs = 180;
+    r.traceX = traceX; r.traceY = traceY;
+    r.traceCount = TRACE_N; r.impactIndex = 30;
 
-    // Pump LVGL to force a render.
-    for (int i = 0; i < 20; i++) {
-        g_ms += 16;
-        lv_timer_handler();
-    }
-    lv_refr_now(disp);
+    int rc = 0;
 
-    const char *path = "build/preview_test.png";
-    int ok = stbi_write_png(path, W, H, 3, fb, W * 3);
-    if (!ok) {
-        fprintf(stderr, "stbi_write_png failed for %s\n", path);
-        return 1;
-    }
+    lv_obj_t *s;
+    s = lv_obj_create(NULL); ui_build_home(s, true);
+    rc |= render_png(s, "build/screen_home_auto.png");
 
-    printf("PREVIEW_OK %s\n", path);
-    return 0;
+    s = lv_obj_create(NULL); ui_build_home(s, false);
+    rc |= render_png(s, "build/screen_home_manual.png");
+
+    s = lv_obj_create(NULL); ui_build_countdown(s, 3, 5);
+    rc |= render_png(s, "build/screen_countdown.png");
+
+    s = lv_obj_create(NULL); ui_build_result(s, r);
+    rc |= render_png(s, "build/screen_result.png");
+
+    s = lv_obj_create(NULL); ui_build_details(s, r);
+    rc |= render_png(s, "build/screen_details.png");
+
+    return rc;
 }
