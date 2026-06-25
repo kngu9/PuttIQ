@@ -17,6 +17,14 @@ static const uint32_t COL_WHITE = 0xFFFFFF;
 static const uint32_t COL_GREY  = 0x888888;
 static const uint32_t COL_TRACK = 0x333333;
 
+// ---- Type scale -----------------------------------------------------------
+// One size per role; reuse everywhere so the same role looks identical.
+#define FONT_CAPTION (&lv_font_montserrat_14)  // small grey sub-labels / hints
+#define FONT_BODY    (&lv_font_montserrat_16)  // toggle, list rows, "listening", suffix
+#define FONT_VALUE   (&dseg7_28)               // face / tempo numeric readouts
+#define FONT_HERO    (&dseg7_44)               // countdown digit
+#define FONT_BTN     (&lv_font_montserrat_28)  // START button label
+
 // Screen geometry.
 static const int CX = 120;
 static const int CY = 120;
@@ -59,9 +67,8 @@ static void add_pressed_feedback(lv_obj_t* obj, bool amberFill)
 
 // Two-dot page indicator near the bottom of result/details (within the circle).
 // `active` selects which dot is amber (0 = result, 1 = details).
-static void build_page_dots(lv_obj_t* scr, int active)
+static void build_page_dots(lv_obj_t* scr, int active, int y)
 {
-    const int y = 206;
     const int gap = 14;            // center-to-center spacing
     const int d = 5;               // dot diameter
     for (int i = 0; i < 2; i++) {
@@ -81,11 +88,11 @@ static void build_page_dots(lv_obj_t* scr, int active)
 
 // A small rounded "EXIT" pill at the bottom of result/details. Grey outline +
 // grey label; expanded tap area so the effective target is >=44pt.
-static void build_exit_pill(lv_obj_t* scr)
+static void build_exit_pill(lv_obj_t* scr, int y)
 {
     lv_obj_t* pill = lv_obj_create(scr);
     lv_obj_set_size(pill, 60, 26);
-    lv_obj_align(pill, LV_ALIGN_CENTER, 0, 222 - CY);
+    lv_obj_align(pill, LV_ALIGN_CENTER, 0, y - CY);
     lv_obj_set_style_radius(pill, 13, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(pill, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_color(pill, lv_color_hex(COL_GREY), LV_PART_MAIN);
@@ -98,7 +105,7 @@ static void build_exit_pill(lv_obj_t* scr)
 
     lv_obj_t* t = lv_label_create(pill);
     lv_label_set_text(t, "EXIT");
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(t, FONT_CAPTION, LV_PART_MAIN);
     lv_obj_set_style_text_color(t, lv_color_hex(COL_GREY), LV_PART_MAIN);
     lv_obj_center(t);
 }
@@ -173,13 +180,13 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
 
     lv_obj_t* a = lv_label_create(box);
     lv_label_set_text(a, "AUTO");
-    lv_obj_set_style_text_font(a, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(a, FONT_BODY, LV_PART_MAIN);
     lv_obj_set_style_text_color(a, lv_color_hex(autoMode ? COL_BLACK : COL_GREY), LV_PART_MAIN);
     lv_obj_align(a, LV_ALIGN_LEFT_MID, 12, 0);
 
     lv_obj_t* m = lv_label_create(box);
     lv_label_set_text(m, "MAN");
-    lv_obj_set_style_text_font(m, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(m, FONT_BODY, LV_PART_MAIN);
     lv_obj_set_style_text_color(m, lv_color_hex(autoMode ? COL_GREY : COL_BLACK), LV_PART_MAIN);
     lv_obj_align(m, LV_ALIGN_RIGHT_MID, -14, 0);
 
@@ -215,7 +222,7 @@ void ui_build_home(lv_obj_t* scr, bool autoMode)
     if (autoMode) {
         // Amber filled circle r=12 centered at (120,110).
         filled_circle(scr, 12, COL_AMBER, CX, 110);
-        label_at(scr, "listening", &lv_font_montserrat_20, COL_GREY, CX, 150);
+        label_at(scr, "listening", FONT_BODY, COL_GREY, CX, 150);
     } else {
         // Amber rounded START button.
         lv_obj_t* btn = lv_obj_create(scr);
@@ -233,11 +240,11 @@ void ui_build_home(lv_obj_t* scr, bool autoMode)
 
         lv_obj_t* s = lv_label_create(btn);
         lv_label_set_text(s, "START");
-        lv_obj_set_style_text_font(s, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_set_style_text_font(s, FONT_BTN, LV_PART_MAIN);
         lv_obj_set_style_text_color(s, lv_color_hex(COL_BLACK), LV_PART_MAIN);
         lv_obj_center(s);
 
-        label_at(scr, "tap to begin", &lv_font_montserrat_16, COL_GREY, CX, 160);
+        label_at(scr, "tap to begin", FONT_CAPTION, COL_GREY, CX, 160);
     }
 }
 
@@ -268,11 +275,11 @@ void ui_build_countdown(lv_obj_t* scr, int secs, int totalSecs)
     lv_obj_set_style_arc_width(arc, 10, LV_PART_MAIN);
     lv_obj_set_style_arc_width(arc, 10, LV_PART_INDICATOR);
 
-    label_at(scr, "GET READY", &lv_font_montserrat_16, COL_GREY, CX, 58);
+    label_at(scr, "GET READY", FONT_CAPTION, COL_GREY, CX, 58);
 
     char buf[8];
     snprintf(buf, sizeof(buf), "%d", secs);
-    label_at(scr, buf, &dseg7_44, COL_AMBER, CX, CY + 6);
+    label_at(scr, buf, FONT_HERO, COL_AMBER, CX, CY + 6);
 }
 
 // ---- Result / trace -------------------------------------------------------
@@ -376,34 +383,39 @@ void ui_build_result(lv_obj_t* scr, const UiResult& r)
     lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
     filled_circle(scr, 6, COL_AMBER, impX, impY);
 
-    // FACE block (top).
-    label_at(scr, "FACE", &lv_font_montserrat_14, COL_GREY, CX, 34);
+    // FACE block (top). Number + L/R suffix live in a centered flex row so the
+    // pair reads as one balanced group (suffix vertically centered with digits).
+    label_at(scr, "FACE", FONT_CAPTION, COL_GREY, CX, 34);
     char num[16];
     snprintf(num, sizeof(num), "%.1f", (double)r.faceDeg);
-    // DSEG7 number, with the L/R suffix in Montserrat just to its right.
-    lv_obj_t* fnum = lv_label_create(scr);
+    lv_obj_t* frow = lv_obj_create(scr);
+    lv_obj_remove_style_all(frow);
+    lv_obj_set_size(frow, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(frow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(frow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(frow, 4, 0);
+    lv_obj_clear_flag(frow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(frow, LV_ALIGN_CENTER, 0, 56 - CY);
+    lv_obj_t* fnum = lv_label_create(frow);
     lv_label_set_text(fnum, num);
-    lv_obj_set_style_text_font(fnum, &dseg7_28, LV_PART_MAIN);
-    lv_obj_set_style_text_color(fnum, lv_color_hex(COL_AMBER), LV_PART_MAIN);
-    lv_obj_align(fnum, LV_ALIGN_CENTER, -8, 54 - CY);
-
+    lv_obj_set_style_text_font(fnum, FONT_VALUE, 0);
+    lv_obj_set_style_text_color(fnum, lv_color_hex(COL_AMBER), 0);
     char lr[2] = { r.faceLR, 0 };
-    lv_obj_t* fsuf = lv_label_create(scr);
+    lv_obj_t* fsuf = lv_label_create(frow);
     lv_label_set_text(fsuf, lr);
-    lv_obj_set_style_text_font(fsuf, &lv_font_montserrat_20, LV_PART_MAIN);
-    lv_obj_set_style_text_color(fsuf, lv_color_hex(COL_AMBER), LV_PART_MAIN);
-    lv_obj_align_to(fsuf, fnum, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -2);
+    lv_obj_set_style_text_font(fsuf, FONT_BODY, 0);
+    lv_obj_set_style_text_color(fsuf, lv_color_hex(COL_AMBER), 0);
 
     // TEMPO block (bottom). Value in DSEG7 to match the FACE readout style;
     // label stays Montserrat grey.
     char tempo[16];
     snprintf(tempo, sizeof(tempo), "%.1f:1", (double)r.tempo);
-    label_at(scr, tempo, &dseg7_28, COL_WHITE, CX, 150);
-    label_at(scr, "TEMPO", &lv_font_montserrat_14, COL_GREY, CX, 174);
+    label_at(scr, tempo, FONT_VALUE, COL_WHITE, CX, 150);
+    label_at(scr, "TEMPO", FONT_CAPTION, COL_GREY, CX, 174);
 
     // Page indicator (result = dot 0) + EXIT affordance.
-    build_page_dots(scr, 0);
-    build_exit_pill(scr);
+    build_page_dots(scr, 0, 188);
+    build_exit_pill(scr, 216);
 
     // Tap anywhere on the result -> details.
     make_clickable(scr, UI_EVT_RESULT_BODY);
@@ -417,13 +429,13 @@ static void detail_row(lv_obj_t* scr, const char* label, const char* value, int 
     const int xL = 52, xR = 188;
     lv_obj_t* l = lv_label_create(scr);
     lv_label_set_text(l, label);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(l, FONT_CAPTION, LV_PART_MAIN);
     lv_obj_set_style_text_color(l, lv_color_hex(COL_GREY), LV_PART_MAIN);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, xL, y);
 
     lv_obj_t* v = lv_label_create(scr);
     lv_label_set_text(v, value);
-    lv_obj_set_style_text_font(v, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(v, FONT_BODY, LV_PART_MAIN);
     lv_obj_set_style_text_color(v, lv_color_hex(COL_WHITE), LV_PART_MAIN);
     lv_obj_align(v, LV_ALIGN_TOP_RIGHT, xR - 240, y);
 }
@@ -436,7 +448,7 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     // ZERO button (added later, on top) wins its own taps.
     make_clickable(scr, UI_EVT_DETAILS_BODY);
 
-    label_at(scr, "DETAILS", &lv_font_montserrat_14, COL_GREY, CX, 38);
+    label_at(scr, "DETAILS", FONT_CAPTION, COL_GREY, CX, 38);
 
     char face[16], path[16], tempo[16], bf[24], dur[16], imp[16];
     snprintf(face,  sizeof(face),  "%.1f%c", (double)r.faceDeg, r.faceLR);
@@ -446,8 +458,8 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     snprintf(dur,   sizeof(dur),   "%ums", (unsigned)r.durMs);
     snprintf(imp,   sizeof(imp),   "%+dms", r.impactOffMs);
 
-    int y = 56;
-    const int step = 15;
+    int y = 50;
+    const int step = 14;
     detail_row(scr, "FACE",   face,  y); y += step;
     detail_row(scr, "PATH",   path,  y); y += step;
     detail_row(scr, "TEMPO",  tempo, y); y += step;
@@ -457,9 +469,9 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
 
     // [ZERO] button (enlarged for a comfortable touch target).
     lv_obj_t* btn = lv_obj_create(scr);
-    lv_obj_set_size(btn, 96, 40);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 166 - CY);
-    lv_obj_set_style_radius(btn, 20, LV_PART_MAIN);
+    lv_obj_set_size(btn, 90, 36);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 148 - CY);
+    lv_obj_set_style_radius(btn, 18, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_color(btn, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
@@ -471,11 +483,11 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
 
     lv_obj_t* z = lv_label_create(btn);
     lv_label_set_text(z, "ZERO");
-    lv_obj_set_style_text_font(z, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(z, FONT_BODY, LV_PART_MAIN);
     lv_obj_set_style_text_color(z, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_center(z);
 
     // Page indicator (details = dot 1) + EXIT affordance.
-    build_page_dots(scr, 1);
-    build_exit_pill(scr);
+    build_page_dots(scr, 1, 182);
+    build_exit_pill(scr, 212);
 }
