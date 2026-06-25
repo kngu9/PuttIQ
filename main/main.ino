@@ -20,6 +20,7 @@
 #include "putt_detector.h"
 #include "putt_orientation.h"
 #include "ui_screens.h"  // LVGL v9.5 screen builders (ui_build_home, etc.)
+#include "imu_driver.h"  // LSM6DS3 IMU hardware driver (ImuSample/RawImuCounts, beginImu/readImu, imuReady)
 
 // New impact-triggered detector (runs alongside the legacy path for live eval).
 static PuttDetector g_putt{DetectorConfig{}};
@@ -121,18 +122,7 @@ static const float GRAVITY_FILTER_ALPHA = 0.04f;
 static const uint8_t START_CONFIRM_SAMPLES = 2;
 static const uint8_t MAX_DIRECTION_CHANGES = 8;
 
-static const uint8_t LSM6DS3_ADDR_6A = 0x6A;
-static const uint8_t LSM6DS3_ADDR_6B = 0x6B;
-static const uint8_t LSM6DS3_WHO_AM_I = 0x0F;
-static const uint8_t LSM6DS3_WHO_AM_I_VALUE = 0x69;
-static const uint8_t LSM6DS3C_WHO_AM_I_VALUE = 0x6A;
-static const uint8_t LSM6DS3_CTRL1_XL = 0x10;
-static const uint8_t LSM6DS3_CTRL2_G = 0x11;
-static const uint8_t LSM6DS3_CTRL3_C = 0x12;
-static const uint8_t LSM6DS3_OUT_TEMP_L = 0x20;
-
-static const float ACCEL_4G_G_PER_LSB = 0.000122f;
-static const float GYRO_500DPS_DPS_PER_LSB = 0.0175f;
+// LSM6DS3 register map + scale constants moved to imu_driver.cpp (driver-private).
 
 enum SensorState {
   SENSOR_NO_IMU,
@@ -153,16 +143,7 @@ static const uint32_t MANUAL_COUNTDOWN_MS = 5000;
 enum UiScreen { UI_NONE, UI_HOME, UI_COUNTDOWN, UI_RESULT, UI_DETAILS, UI_CONFIG, UI_NOIMU, UI_SETTLING };
 
 // Vec3 now comes from imu_types.h (shared with the new detector modules).
-
-struct ImuSample {
-  Vec3 accelMps2;
-  Vec3 gyroRad;
-  float tempC;
-};
-
-struct RawImuCounts {
-  int16_t gx, gy, gz, ax, ay, az;
-};
+// ImuSample / RawImuCounts now come from imu_driver.h.
 
 struct BufferedSample {
   uint32_t ms;
@@ -258,9 +239,8 @@ static SensorState state = SENSOR_NO_IMU;
 static AppMode appMode = MODE_AUTO;
 static uint32_t countdownStartMs = 0;
 static int countdownLastSec = -1;
-static uint8_t imuAddress = 0;
-static bool imuReady = false;
-static float imuTempSensitivity = 256.0f;
+// imuAddress / imuReady / imuTempSensitivity moved to imu_driver
+// (imuReady is declared extern in imu_driver.h; the others are driver-private).
 
 static Vec3 gyroBias = {0.0f, 0.0f, 0.0f};
 static Vec3 filteredGyro = {0.0f, 0.0f, 0.0f};
@@ -895,148 +875,23 @@ static void initDisplay() {
   initLvgl();                // LVGL pipeline + home screen
 }
 
-static void setImuPower(bool enabled) {
-#if defined(PIN_LSM6DS3TR_C_POWER)
-  pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
-  digitalWrite(PIN_LSM6DS3TR_C_POWER, enabled ? HIGH : LOW);
-#endif
-
-#if defined(NRF_P1)
-  NRF_P1->PIN_CNF[8] = ((uint32_t)NRF_GPIO_PIN_DIR_OUTPUT << GPIO_PIN_CNF_DIR_Pos)
-                       | ((uint32_t)NRF_GPIO_PIN_INPUT_DISCONNECT << GPIO_PIN_CNF_INPUT_Pos)
-                       | ((uint32_t)NRF_GPIO_PIN_NOPULL << GPIO_PIN_CNF_PULL_Pos)
-                       | ((uint32_t)NRF_GPIO_PIN_H0H1 << GPIO_PIN_CNF_DRIVE_Pos)
-                       | ((uint32_t)NRF_GPIO_PIN_NOSENSE << GPIO_PIN_CNF_SENSE_Pos);
-  if (enabled) {
-    NRF_P1->OUTSET = (1UL << 8);
-  } else {
-    NRF_P1->OUTCLR = (1UL << 8);
-  }
-#endif
-
-  delay(50);
-}
-
-static bool writeImuReg(uint8_t reg, uint8_t value) {
-  if (imuAddress == 0) {
-    return false;
-  }
-
-  Wire1.beginTransmission(imuAddress);
-  Wire1.write(reg);
-  Wire1.write(value);
-  return Wire1.endTransmission() == 0;
-}
-
-static bool readImuRegAt(uint8_t address, uint8_t reg, uint8_t &value) {
-  Wire1.beginTransmission(address);
-  Wire1.write(reg);
-  if (Wire1.endTransmission(false) != 0) {
-    return false;
-  }
-
-  if (Wire1.requestFrom(address, (uint8_t)1) != 1) {
-    return false;
-  }
-
-  value = Wire1.read();
-  return true;
-}
-
-static bool readImuBytes(uint8_t reg, uint8_t *buffer, uint8_t length) {
-  Wire1.beginTransmission(imuAddress);
-  Wire1.write(reg);
-  if (Wire1.endTransmission(false) != 0) {
-    return false;
-  }
-
-  if (Wire1.requestFrom(imuAddress, length) != length) {
-    return false;
-  }
-
-  for (uint8_t i = 0; i < length; i++) {
-    buffer[i] = Wire1.read();
-  }
-  return true;
-}
-
-static int16_t i16le(const uint8_t *b) {
-  return (int16_t)((uint16_t)b[1] << 8 | b[0]);
-}
-
-static bool beginImuAt(uint8_t address) {
-  uint8_t whoAmI = 0;
-  if (!readImuRegAt(address, LSM6DS3_WHO_AM_I, whoAmI)) {
-    return false;
-  }
-
-  if (whoAmI != LSM6DS3_WHO_AM_I_VALUE && whoAmI != LSM6DS3C_WHO_AM_I_VALUE) {
-    return false;
-  }
-
-  imuAddress = address;
-  imuTempSensitivity = whoAmI == LSM6DS3C_WHO_AM_I_VALUE ? 256.0f : 16.0f;
-
-  // CTRL3_C: BDU + auto-increment. CTRL1/2: 208 Hz, +/-4g, +/-500 dps.
-  if (!writeImuReg(LSM6DS3_CTRL3_C, 0x44) ||
-      !writeImuReg(LSM6DS3_CTRL1_XL, 0x58) ||
-      !writeImuReg(LSM6DS3_CTRL2_G, 0x54)) {
-    imuAddress = 0;
-    return false;
-  }
-
-  return true;
-}
-
-static bool beginImu() {
-  setImuPower(true);
-  Wire1.begin();
-
-  if (!beginImuAt(LSM6DS3_ADDR_6A) && !beginImuAt(LSM6DS3_ADDR_6B)) {
-    imuReady = false;
-    imuAddress = 0;
+// The hardware half of IMU bring-up (power/probe/configure) now lives in
+// imu_driver (beginImu). This wrapper keeps the application-state resets that
+// used to live inside beginImu(): on success it arms the settling state, on
+// failure it drops to the no-IMU state. Behavior is identical to the old
+// monolithic beginImu(); only the hardware code was extracted.
+static bool startImuSession() {
+  if (!beginImu()) {
     state = SENSOR_NO_IMU;
     return false;
   }
 
-  imuReady = true;
   state = SENSOR_SETTLING;
   stateSinceMs = millis();
   requireStillnessForReady = true;
   gyroBiasReady = false;
   gyroFilterReady = false;
   lastSampleUs = micros();
-  return true;
-}
-
-static bool readImu(ImuSample &sample, RawImuCounts &counts) {
-  uint8_t b[14];
-  if (!imuReady || imuAddress == 0 || !readImuBytes(LSM6DS3_OUT_TEMP_L, b, sizeof(b))) {
-    return false;
-  }
-
-  int16_t rawTemp = i16le(&b[0]);
-  int16_t rawGx = i16le(&b[2]);
-  int16_t rawGy = i16le(&b[4]);
-  int16_t rawGz = i16le(&b[6]);
-  int16_t rawAx = i16le(&b[8]);
-  int16_t rawAy = i16le(&b[10]);
-  int16_t rawAz = i16le(&b[12]);
-
-  counts.gx = rawGx;
-  counts.gy = rawGy;
-  counts.gz = rawGz;
-  counts.ax = rawAx;
-  counts.ay = rawAy;
-  counts.az = rawAz;
-
-  sample.tempC = (float)rawTemp / imuTempSensitivity + 25.0f;
-  sample.gyroRad.x = rawGx * GYRO_500DPS_DPS_PER_LSB * DEG_TO_RAD_F;
-  sample.gyroRad.y = rawGy * GYRO_500DPS_DPS_PER_LSB * DEG_TO_RAD_F;
-  sample.gyroRad.z = rawGz * GYRO_500DPS_DPS_PER_LSB * DEG_TO_RAD_F;
-  sample.accelMps2.x = rawAx * ACCEL_4G_G_PER_LSB * 9.80665f;
-  sample.accelMps2.y = rawAy * ACCEL_4G_G_PER_LSB * 9.80665f;
-  sample.accelMps2.z = rawAz * ACCEL_4G_G_PER_LSB * 9.80665f;
   return true;
 }
 
@@ -1960,7 +1815,7 @@ void setup() {
 
   initDisplay();
   Serial.println(F("SETUP,stage=begin_imu"));
-  beginImu();
+  startImuSession();
   Serial.println(imuReady ? F("SETUP,stage=imu_ready") : F("SETUP,stage=no_imu"));
   lastStatusMs = millis();
   lastImuRetryMs = millis();
@@ -1986,7 +1841,7 @@ void loop() {
     }
     if (nowMs - lastImuRetryMs >= 3000) {
       lastImuRetryMs = nowMs;
-      beginImu();
+      startImuSession();
     }
     // Keep the UI alive (NO IMU screen) and process deferred swaps.
     if (g_lvglReady) {
