@@ -27,6 +27,10 @@ static PuttDetector g_putt{DetectorConfig{}};
 static OrientationTracker g_orient;
 static bool g_orientActive = false;
 static uint32_t orientLastMs = 0;
+// Address-calibration offsets: tap "ZERO" on the stats page after a stroke you
+// know was square/straight to null the systematic face/path bias.
+static float faceZeroDeg = 0.0f;
+static float pathZeroDeg = 0.0f;
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
@@ -924,7 +928,8 @@ static void showStatsPage() {
     snprintf(impactLine, sizeof(impactLine), "Impact --");
   }
   snprintf(faceLine, sizeof(faceLine), "F %.1f  P %.1f",
-           lastResult.faceAngleImpactDeg, lastResult.pathAngleImpactDeg);
+           lastResult.faceAngleImpactDeg - faceZeroDeg,
+           lastResult.pathAngleImpactDeg - pathZeroDeg);
 
   if (screenSpriteReady) {
     screenSprite.fillSprite(TFT_BLACK);
@@ -934,6 +939,7 @@ static void showStatsPage() {
     drawCenteredSprite(motionLine, 106, 2, TFT_WHITE);
     drawCenteredSprite(impactLine, 138, 2, TFT_LIGHTGREY);
     drawCenteredSprite(faceLine, 164, 1, TFT_LIGHTGREY);
+    drawCenteredSprite("[ZERO]", 178, 1, TFT_DARKGREY);
     drawPageDotsSprite(RESULT_PAGE_STATS);
     drawExitButtonSprite();
     screenSprite.pushSprite(0, 0);
@@ -947,6 +953,7 @@ static void showStatsPage() {
   drawCentered(motionLine, 106, 2, TFT_WHITE);
   drawCentered(impactLine, 138, 2, TFT_LIGHTGREY);
   drawCentered(faceLine, 164, 1, TFT_LIGHTGREY);
+  drawCentered("[ZERO]", 178, 1, TFT_DARKGREY);
   drawPageDotsTft(RESULT_PAGE_STATS);
   drawExitButtonTft();
 }
@@ -1857,8 +1864,9 @@ static void processBufferedSample(uint16_t index, bool learnAxis) {
 
   float projectionDps = dot3(s.gyroRad, swing.gyroAxis) * RAD_TO_DEG_F;
   updateSwingFeatures(s.ms, s.gyroDps, s.gyroRad, s.linearMps2, projectionDps);
-  recordHeadTrace(s.ms, s.gyroRad, projectionDps);
 
+  // Advance orientation BEFORE plotting the head so the trace point reflects
+  // this sample's pose.
   if (g_orientActive) {
     float odt = (float)(s.ms - orientLastMs) / 1000.0f;
     orientLastMs = s.ms;
@@ -1866,6 +1874,7 @@ static void processBufferedSample(uint16_t index, bool learnAxis) {
       g_orient.integrate(s.gyroRad, odt);  // gyroRad is rad/s in the body frame
     }
   }
+  recordHeadTrace(s.ms, s.gyroRad, projectionDps);
 
   if (index > 0) {
     Vec3 delta = sub3(s.linearAccelMps2, orderedBuffer[index - 1].linearAccelMps2);
@@ -2198,16 +2207,11 @@ static void recordHeadTrace(uint32_t nowMs, const Vec3 &gyroRad, float projectio
   }
   swing.traceLastMs = nowMs;
 
-  float dt = (float)deltaMs / 1000.0f;
-  float projectionRad = projectionDps * DEG_TO_RAD_F;
-  float lateralRad = dot3(gyroRad, swing.lateralAxis);
-  swing.traceAngleRad += -projectionRad * dt;
-  swing.traceLateralRad += lateralRad * dt;
-
-  float x = sinf(swing.traceAngleRad) * HEAD_PATH_RADIUS;
-  float y = (1.0f - cosf(swing.traceAngleRad)) * HEAD_PATH_ARC_DEPTH
-            + swing.traceLateralRad * HEAD_PATH_LATERAL_GAIN;
-  pushTrace(x, y);
+  // Real clubhead path from the orientation tracker: head hangs HEAD_PATH_RADIUS
+  // (normalized shaft length) below the butt-mounted sensor; project its swept
+  // position into the address horizontal plane.
+  HeadPoint hp = g_orient.headPoint(swing.gyroAxis, HEAD_PATH_RADIUS);
+  pushTrace(hp.x, hp.y);
 }
 
 static void updateFaceAngleEstimate(uint32_t nowMs, const Vec3 &gyroRad) {
@@ -2384,6 +2388,15 @@ static void updateResultHold(uint32_t nowMs) {
 
   if (isExitButtonTap(event)) {
     armForSwing(nowMs);
+    return;
+  }
+
+  // "ZERO" on the stats page: null the face/path bias from this stroke.
+  if (resultPage == RESULT_PAGE_STATS && event.gesture == TOUCH_TAP &&
+      event.x >= 88 && event.x <= 152 && event.y >= 172 && event.y <= 184) {
+    faceZeroDeg = lastResult.faceAngleImpactDeg;
+    pathZeroDeg = lastResult.pathAngleImpactDeg;
+    showResultPage();
     return;
   }
 
