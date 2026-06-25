@@ -67,8 +67,6 @@ static const uint32_t TRACE_POINT_MIN_MS = 10;
 static const uint32_t BOOT_READY_HOLD_MS = 900;
 static const uint32_t POST_PUTT_COOLDOWN_MS = 350;
 static const uint32_t RESULT_MIN_HOLD_MS = 250;
-static const uint32_t IMPACT_REPLAY_FRAME_MS = 45;
-static const uint8_t IMPACT_REPLAY_FRAMES = 48;
 static const uint32_t SWING_STOP_HOLD_MS = 260;
 static const uint32_t POST_FORWARD_END_HOLD_MS = 180;
 static const uint32_t MAX_PRETRIGGER_MS = 700;
@@ -292,7 +290,6 @@ static float traceMaxY = 0.0f;
 static uint32_t stateSinceMs = 0;
 static uint32_t lastSampleUs = 0;
 static uint32_t lastStatusMs = 0;
-static uint32_t lastRollingDebugMs = 0;
 static uint32_t lastImuRetryMs = 0;
 static uint32_t readyStillSinceMs = 0;
 static bool requireStillnessForReady = true;
@@ -305,9 +302,7 @@ static int16_t gestureStartY = 0;
 static int16_t gestureLastX = 0;
 static int16_t gestureLastY = 0;
 static uint32_t gestureStartMs = 0;
-static uint32_t impactReplayLastMs = 0;
 static uint32_t resultPageShownMs = 0;
-static uint8_t impactReplayFrame = 0;
 static float readyPeakGyroDps = 0.0f;
 static uint8_t readyStartCount = 0;
 static bool armedCaptureEvaluation = false;
@@ -633,471 +628,6 @@ static void showResult(bool detected, const char *reason, uint32_t durationMs, f
   }
 }
 
-static void drawPageDotsSprite(uint8_t pageIndex) {
-  int16_t startX = 120 - ((RESULT_PAGE_COUNT - 1) * 14) / 2;
-  for (uint8_t i = 0; i < RESULT_PAGE_COUNT; i++) {
-    uint16_t color = i == pageIndex ? TFT_WHITE : TFT_DARKGREY;
-    screenSprite.fillCircle(startX + i * 14, 182, 3, color);
-  }
-}
-
-static void drawPageDotsTft(uint8_t pageIndex) {
-  int16_t startX = 120 - ((RESULT_PAGE_COUNT - 1) * 14) / 2;
-  for (uint8_t i = 0; i < RESULT_PAGE_COUNT; i++) {
-    uint16_t color = i == pageIndex ? TFT_WHITE : TFT_DARKGREY;
-    tft.fillCircle(startX + i * 14, 182, 3, color);
-  }
-}
-
-// Format a face angle (already zero-corrected) as "1.2R" / "0.8L".
-// Open face (positive) reads R(ight) for a right-handed reference; closed reads L.
-static void formatFaceRL(char *buf, size_t n, float faceDeg) {
-  char suffix = faceDeg >= 0.0f ? 'R' : 'L';
-  snprintf(buf, n, "%.1f%c", fabsf(faceDeg), suffix);
-}
-
-static int16_t traceScreenX(float x, float scale) {
-  return (int16_t)(120.0f - x * scale);
-}
-
-static int16_t traceScreenY(float y, float scale) {
-  return (int16_t)(128.0f + y * scale);
-}
-
-static void activeDrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
-  if (screenSpriteReady) {
-    screenSprite.drawLine(x0, y0, x1, y1, color);
-  } else {
-    tft.drawLine(x0, y0, x1, y1, color);
-  }
-}
-
-static void activeDrawWideLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t width, uint16_t color) {
-  int16_t dx = x1 - x0;
-  int16_t dy = y1 - y0;
-  int16_t ox = abs(dx) > abs(dy) ? 0 : 1;
-  int16_t oy = abs(dx) > abs(dy) ? 1 : 0;
-  int8_t half = width / 2;
-  for (int8_t i = -half; i <= half; i++) {
-    activeDrawLine(x0 + ox * i, y0 + oy * i, x1 + ox * i, y1 + oy * i, color);
-  }
-}
-
-static void activeFillCircle(int16_t x, int16_t y, int16_t r, uint16_t color) {
-  if (screenSpriteReady) {
-    screenSprite.fillCircle(x, y, r, color);
-  } else {
-    tft.fillCircle(x, y, r, color);
-  }
-}
-
-static void activeDrawCircle(int16_t x, int16_t y, int16_t r, uint16_t color) {
-  if (screenSpriteReady) {
-    screenSprite.drawCircle(x, y, r, color);
-  } else {
-    tft.drawCircle(x, y, r, color);
-  }
-}
-
-static uint16_t forwardTraceStartIndex() {
-  if (traceTransitionIndex > 0 && traceTransitionIndex < traceCount - 1) {
-    return traceTransitionIndex;
-  }
-  return 0;
-}
-
-#if 0
-static void showImpactReplayFrame(uint8_t replayFrame) {
-  (void)replayFrame;
-  if (!displayReady) {
-    return;
-  }
-
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCenteredSprite(lastResult.impactDetected ? "IMPACT" : "ARC", 34, 2, TFT_CYAN);
-  } else {
-    tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 112, TFT_CYAN);
-    drawCentered(lastResult.impactDetected ? "IMPACT" : "ARC", 34, 2, TFT_CYAN);
-  }
-
-  uint16_t startIndex = forwardTraceStartIndex();
-  if (traceCount < 2 || startIndex >= traceCount - 1) {
-    if (screenSpriteReady) {
-      drawCenteredSprite("No trace", 112, 2, TFT_WHITE);
-      drawPageDotsSprite(RESULT_PAGE_TRACE);
-      drawExitButtonSprite();
-      screenSprite.pushSprite(0, 0);
-    } else {
-      drawCentered("No trace", 112, 2, TFT_WHITE);
-      drawPageDotsTft(RESULT_PAGE_TRACE);
-      drawExitButtonTft();
-    }
-    return;
-  }
-
-  uint16_t impactIndex = traceImpactIndex;
-  bool hasImpactPoint = lastResult.impactDetected && impactIndex >= startIndex && impactIndex < traceCount;
-  if (!hasImpactPoint) {
-    impactIndex = startIndex + (traceCount - startIndex) / 2;
-  }
-
-  float centerRefX = hasImpactPoint ? tracePoints[impactIndex].x : 0.0f;
-  float centerRefY = hasImpactPoint ? tracePoints[impactIndex].y : 0.0f;
-  if (!hasImpactPoint) {
-    for (uint16_t i = startIndex; i < traceCount; i++) {
-      centerRefX += tracePoints[i].x;
-      centerRefY += tracePoints[i].y;
-    }
-    float denom = (float)(traceCount - startIndex);
-    centerRefX /= denom;
-    centerRefY /= denom;
-  }
-
-  float minRelX = 0.0f;
-  float maxRelX = 0.0f;
-  float minRelY = 0.0f;
-  float maxRelY = 0.0f;
-  for (uint16_t i = startIndex; i < traceCount; i++) {
-    float relX = tracePoints[i].x - centerRefX;
-    float relY = tracePoints[i].y - centerRefY;
-    if (relX < minRelX) {
-      minRelX = relX;
-    }
-    if (relX > maxRelX) {
-      maxRelX = relX;
-    }
-    if (relY < minRelY) {
-      minRelY = relY;
-    }
-    if (relY > maxRelY) {
-      maxRelY = relY;
-    }
-  }
-
-  float pathDx = tracePoints[traceCount - 1].x - tracePoints[startIndex].x;
-  float xSign = pathDx < 0.0f ? -1.0f : 1.0f;
-  float spanX = maxRelX - minRelX;
-  float spanY = maxRelY - minRelY;
-  if (spanX < 0.01f) {
-    spanX = 0.01f;
-  }
-  if (spanY < 0.01f) {
-    spanY = 0.01f;
-  }
-
-  float scale = 88.0f / (spanX > spanY ? spanX : spanY);
-  if (scale > 420.0f) {
-    scale = 420.0f;
-  }
-  int16_t ballX = 124;
-  int16_t ballY = 122;
-
-  activeDrawLine(50, ballY, 194, ballY, TFT_DARKGREY);
-  activeDrawLine(ballX, 62, ballX, 172, TFT_DARKGREY);
-
-  int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].x - impactX) * xSign * scale);
-  int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].y - impactY) * scale);
-  activeFillCircle(prevX, prevY, 2, TFT_DARKGREY);
-
-  for (uint16_t i = startIndex + 1; i < traceCount; i++) {
-    int16_t x = ballX + (int16_t)((tracePoints[i].x - impactX) * xSign * scale);
-    int16_t y = ballY + (int16_t)((tracePoints[i].y - impactY) * scale);
-    uint16_t color = i < impactIndex ? TFT_DARKGREEN : TFT_GREEN;
-    activeDrawWideLine(prevX, prevY, x, y, 2, color);
-    prevX = x;
-    prevY = y;
-  }
-
-  uint16_t pathStartIndex = impactIndex > startIndex ? impactIndex - 1 : startIndex;
-  uint16_t pathEndIndex = impactIndex + 1 < traceCount ? impactIndex + 1 : traceCount - 1;
-  float pathVectorX = (tracePoints[pathStartIndex].x - tracePoints[pathEndIndex].x) * xSign;
-  float pathVectorY = tracePoints[pathStartIndex].y - tracePoints[pathEndIndex].y;
-  if (fabsf(pathVectorX) < 0.0001f && fabsf(pathVectorY) < 0.0001f) {
-    pathVectorX = (tracePoints[startIndex].x - tracePoints[traceCount - 1].x) * xSign;
-    pathVectorY = tracePoints[startIndex].y - tracePoints[traceCount - 1].y;
-  }
-
-  float pathRad = atan2f(pathVectorY, pathVectorX);
-  float faceRad = pathRad + lastResult.faceAngleImpactDeg * DEG_TO_RAD_F;
-  float launchLen = 70.0f;
-  int16_t launchX = ballX + (int16_t)(cosf(faceRad) * launchLen);
-  int16_t launchY = ballY + (int16_t)(sinf(faceRad) * launchLen);
-  activeDrawWideLine(ballX, ballY, launchX, launchY, 2, TFT_SKYBLUE);
-  activeFillCircle(launchX, launchY, 3, TFT_SKYBLUE);
-
-  float faceNormalX = cosf(faceRad);
-  float faceNormalY = sinf(faceRad);
-  float faceTangentX = -faceNormalY;
-  float faceTangentY = faceNormalX;
-  int16_t faceCx = ballX - (int16_t)(faceNormalX * 17.0f);
-  int16_t faceCy = ballY - (int16_t)(faceNormalY * 17.0f);
-  int16_t faceHalf = 24;
-  int16_t faceX0 = faceCx - (int16_t)(faceTangentX * faceHalf);
-  int16_t faceY0 = faceCy - (int16_t)(faceTangentY * faceHalf);
-  int16_t faceX1 = faceCx + (int16_t)(faceTangentX * faceHalf);
-  int16_t faceY1 = faceCy + (int16_t)(faceTangentY * faceHalf);
-
-  for (uint8_t depth = 13; depth > 0; depth -= 4) {
-    int16_t offsetX = (int16_t)(faceNormalX * depth);
-    int16_t offsetY = (int16_t)(faceNormalY * depth);
-    uint16_t bodyColor = depth > 8 ? TFT_DARKGREY : TFT_LIGHTGREY;
-    activeDrawWideLine(faceX0 - offsetX, faceY0 - offsetY,
-                       faceX1 - offsetX, faceY1 - offsetY,
-                       5, bodyColor);
-  }
-  activeDrawWideLine(faceX0, faceY0, faceX1, faceY1, 5, TFT_WHITE);
-  activeFillCircle(faceX0, faceY0, 4, TFT_LIGHTGREY);
-  activeFillCircle(faceX1, faceY1, 4, TFT_LIGHTGREY);
-
-  int16_t backCx = faceCx - (int16_t)(faceNormalX * 15.0f);
-  int16_t backCy = faceCy - (int16_t)(faceNormalY * 15.0f);
-  int16_t shaftX0 = backCx;
-  int16_t shaftY0 = backCy;
-  int16_t shaftX1 = backCx - (int16_t)(faceNormalX * 34.0f + faceTangentX * 10.0f);
-  int16_t shaftY1 = backCy - (int16_t)(faceNormalY * 34.0f + faceTangentY * 10.0f);
-  activeDrawWideLine(shaftX0, shaftY0, shaftX1, shaftY1, 3, TFT_DARKGREY);
-  activeFillCircle(backCx, backCy, 3, TFT_LIGHTGREY);
-
-  activeFillCircle(ballX, ballY, 8, TFT_WHITE);
-  activeDrawCircle(ballX, ballY, 8, TFT_DARKGREY);
-  activeFillCircle(ballX, ballY, 3, TFT_RED);
-
-  if (screenSpriteReady) {
-    drawPageDotsSprite(RESULT_PAGE_TRACE);
-    drawExitButtonSprite();
-    screenSprite.pushSprite(0, 0);
-  } else {
-    drawPageDotsTft(RESULT_PAGE_TRACE);
-    drawExitButtonTft();
-  }
-}
-
-static void showHeadTraceAnimation() {
-  showImpactReplayFrame(IMPACT_REPLAY_FRAMES);
-}
-#endif
-
-static int16_t clampScreenCoord(int16_t value) {
-  if (value < 24) {
-    return 24;
-  }
-  if (value > 216) {
-    return 216;
-  }
-  return value;
-}
-
-static void safeDrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
-  activeDrawLine(clampScreenCoord(x0), clampScreenCoord(y0),
-                 clampScreenCoord(x1), clampScreenCoord(y1), color);
-}
-
-// TRACE hero page: immersive clubhead arc on the instrument face.
-// Sprite-only layout; minimal centered fallback when the sprite is unavailable.
-static void showTracePage() {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady) {
-    return;
-  }
-
-  if (!screenSpriteReady) {
-    tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCentered("TRACE", 110, 2, TFT_WHITE);
-    drawPageDotsTft(RESULT_PAGE_TRACE);
-    drawExitButtonTft();
-    return;
-  }
-
-  char faceVal[12];
-  formatFaceRL(faceVal, sizeof(faceVal), lastResult.faceAngleImpactDeg - faceZeroDeg);
-  char tempoVal[12];
-  snprintf(tempoVal, sizeof(tempoVal), "%.1f:1", lastResult.tempo);
-
-  screenSprite.fillSprite(TFT_BLACK);
-  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-  // Straight-stroke reference: the stroke runs HORIZONTALLY (approach left ->
-  // follow-through right), so the target line is the faint horizontal line.
-  safeDrawLine(56, 120, 184, 120, TFT_DARKGREY);
-
-  int16_t ballX = 120;
-  int16_t ballY = 120;
-
-  uint16_t startIndex = forwardTraceStartIndex();
-  if (traceCount < 2 || startIndex >= traceCount - 1) {
-    drawCenteredSprite("No trace", 112, 2, TFT_WHITE);
-  } else {
-    uint16_t impactIndex = traceImpactIndex;
-    bool hasImpactPoint = lastResult.impactDetected && impactIndex >= startIndex && impactIndex < traceCount;
-    if (!hasImpactPoint) {
-      impactIndex = startIndex + (traceCount - startIndex) / 2;
-    }
-
-    float centerRefX = hasImpactPoint ? tracePoints[impactIndex].x : 0.0f;
-    float centerRefY = hasImpactPoint ? tracePoints[impactIndex].y : 0.0f;
-    if (!hasImpactPoint) {
-      for (uint16_t i = startIndex; i < traceCount; i++) {
-        centerRefX += tracePoints[i].x;
-        centerRefY += tracePoints[i].y;
-      }
-      float denom = (float)(traceCount - startIndex);
-      centerRefX /= denom;
-      centerRefY /= denom;
-    }
-
-    float minRelX = 0.0f;
-    float maxRelX = 0.0f;
-    float minRelY = 0.0f;
-    float maxRelY = 0.0f;
-    for (uint16_t i = startIndex; i < traceCount; i++) {
-      float relX = tracePoints[i].x - centerRefX;
-      float relY = tracePoints[i].y - centerRefY;
-      if (relX < minRelX) minRelX = relX;
-      if (relX > maxRelX) maxRelX = relX;
-      if (relY < minRelY) minRelY = relY;
-      if (relY > maxRelY) maxRelY = relY;
-    }
-
-    float spanX = maxRelX - minRelX;
-    float spanY = maxRelY - minRelY;
-    if (spanX < 0.02f) spanX = 0.02f;
-    if (spanY < 0.02f) spanY = 0.02f;
-
-    float scale = 70.0f / (spanX > spanY ? spanX : spanY);
-    if (scale > 260.0f) {
-      scale = 260.0f;
-    }
-
-    // Stroke runs horizontally: forward-along-target maps to screen X (so the
-    // follow-through travels to the right), lateral maps to screen Y.
-    float pathDy = tracePoints[traceCount - 1].y - tracePoints[startIndex].y;
-    float fwdSign = pathDy < 0.0f ? -1.0f : 1.0f;
-
-    // Clubhead arc polyline, faked 2px by drawing twice offset 1px in y.
-    // Approach (before impact) is dim grey; follow-through (after) is white, so
-    // the eye follows the stroke INTO the ball.
-    uint16_t pointCount = traceCount - startIndex;
-    uint16_t step = pointCount > 24 ? pointCount / 24 : 1;
-    int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].y - centerRefY) * fwdSign * scale);
-    int16_t prevY = ballY + (int16_t)((tracePoints[startIndex].x - centerRefX) * scale);
-    for (uint16_t i = startIndex + step; i < traceCount; i += step) {
-      int16_t x = ballX + (int16_t)((tracePoints[i].y - centerRefY) * fwdSign * scale);
-      int16_t y = ballY + (int16_t)((tracePoints[i].x - centerRefX) * scale);
-      uint16_t color = (i <= impactIndex) ? UI_GREY : TFT_WHITE;
-      safeDrawLine(prevX, prevY, x, y, color);
-      safeDrawLine(prevX, prevY + 1, x, y + 1, color);
-      prevX = x;
-      prevY = y;
-    }
-
-    // The impact point maps to screen center (the trace is centered on it).
-    // Draw the ball there with an amber contact ring so it's unmistakable.
-    activeFillCircle(ballX, ballY, 6, TFT_WHITE);
-    activeDrawCircle(ballX, ballY, 6, UI_GREY);
-    activeDrawCircle(ballX, ballY, 9, UI_AMBER);
-  }
-
-  // FACE chip (top).
-  drawCenteredSprite("FACE", 66, 1, TFT_DARKGREY);
-  drawCenteredSprite(faceVal, 80, 2, UI_AMBER);
-
-  // TEMPO chip (bottom).
-  drawCenteredSprite(tempoVal, 150, 2, TFT_WHITE);
-  drawCenteredSprite("TEMPO", 170, 1, TFT_DARKGREY);
-
-  drawPageDotsSprite(RESULT_PAGE_TRACE);
-  drawExitButtonSprite();
-  screenSprite.pushSprite(0, 0);
-}
-
-// DETAILS page: consolidated numbers stacked within the safe circle, plus ZERO.
-static void showDetailsPage() {
-  return;  // LVGL milestone: neutered.
-  char faceVal[12];
-  formatFaceRL(faceVal, sizeof(faceVal), lastResult.faceAngleImpactDeg - faceZeroDeg);
-
-  float pathDeg = lastResult.pathAngleImpactDeg - pathZeroDeg;
-  char pathVal[16];
-  snprintf(pathVal, sizeof(pathVal), "%.1f %s", fabsf(pathDeg), pathDeg >= 0.0f ? "OUT" : "IN");
-
-  char tempoVal[12];
-  snprintf(tempoVal, sizeof(tempoVal), "%.1f:1", lastResult.tempo);
-
-  char bfVal[20];
-  snprintf(bfVal, sizeof(bfVal), "%lu/%lu",
-           (unsigned long)lastResult.backswingMs,
-           (unsigned long)lastResult.forwardMs);
-
-  char durVal[16];
-  snprintf(durVal, sizeof(durVal), "%lu ms", (unsigned long)lastResult.durationMs);
-
-  char impactVal[16];
-  if (lastResult.impactDetected) {
-    snprintf(impactVal, sizeof(impactVal), "%+ld", (long)lastResult.impactOffsetMs);
-  } else {
-    snprintf(impactVal, sizeof(impactVal), "--");
-  }
-
-  char rows[6][28];
-  snprintf(rows[0], sizeof(rows[0]), "%-6s %s", "FACE", faceVal);
-  snprintf(rows[1], sizeof(rows[1]), "%-6s %s", "PATH", pathVal);
-  snprintf(rows[2], sizeof(rows[2]), "%-6s %s", "TEMPO", tempoVal);
-  snprintf(rows[3], sizeof(rows[3]), "%-6s %s", "B/F", bfVal);
-  snprintf(rows[4], sizeof(rows[4]), "%-6s %s", "DUR", durVal);
-  snprintf(rows[5], sizeof(rows[5]), "%-6s %s", "IMPACT", impactVal);
-
-  if (!screenSpriteReady) {
-    tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCentered("DETAILS", 44, 1, UI_GREY);
-    for (uint8_t i = 0; i < 6; i++) {
-      drawCentered(rows[i], 64 + i * 18, 1, TFT_WHITE);
-    }
-    drawPageDotsTft(RESULT_PAGE_DETAILS);
-    drawExitButtonTft();
-    return;
-  }
-
-  screenSprite.fillSprite(TFT_BLACK);
-  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCenteredSprite("DETAILS", 44, 1, UI_GREY);
-  for (uint8_t i = 0; i < 6; i++) {
-    drawCenteredSprite(rows[i], 64 + i * 18, 1, TFT_WHITE);
-  }
-  // ZERO pill.
-  screenSprite.drawRoundRect(86, 158, 68, 24, 12, UI_AMBER);
-  drawCenteredSprite("ZERO", 165, 1, UI_AMBER);
-  drawPageDotsSprite(RESULT_PAGE_DETAILS);
-  drawExitButtonSprite();
-  screenSprite.pushSprite(0, 0);
-}
-
-static void showResultPage() {
-  if (resultPage == RESULT_PAGE_TRACE) {
-    showTracePage();
-  } else {
-    showDetailsPage();
-  }
-}
-
-static void moveResultPage(int8_t direction) {
-  uint8_t maxItems = RESULT_PAGE_COUNT;
-  uint8_t nextItem = (uint8_t)resultPage;
-
-  if (direction > 0) {
-    nextItem = (nextItem + 1) % maxItems;
-  } else if (direction < 0) {
-    nextItem = (nextItem + maxItems - 1) % maxItems;
-  }
-
-  resultPage = (ResultPage)nextItem;
-  resultPageShownMs = millis();
-  showResultPage();
-}
-
 static void initTouchButton() {
 #if defined(TOUCH_INT)
   pinMode(TOUCH_INT, INPUT_PULLUP);
@@ -1258,6 +788,10 @@ static void lv_touch_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
 // ---------------------------------------------------------------------------
 static UiScreen g_uiCur = UI_NONE;
 static UiScreen g_uiReq = UI_NONE;
+// Config is a UI-only modal over the idle state (no backing FSM state). While
+// open, suppress the state->screen auto-sync and result pop-ups so it isn't
+// bounced back to home each loop.
+static bool g_inConfig = false;
 static bool     g_uiForce = false;     // rebuild even if requested == current
 static int      g_countdownSecs = 5;   // digit currently shown on UI_COUNTDOWN
 static int      g_countdownTotal = (int)(MANUAL_COUNTDOWN_MS / 1000);
@@ -1395,6 +929,7 @@ static void ui_on_click(int id) {
       ui_request(UI_CONFIG, true);
       break;
     case UI_EVT_CONFIG:
+      g_inConfig = true;             // modal: hold Config until EXIT
       ui_request(UI_CONFIG, true);
       break;
     case UI_EVT_RESULT_BODY:
@@ -1411,6 +946,7 @@ static void ui_on_click(int id) {
       // Shared EXIT affordance. From result/details (RESULT_HOLD) it dismisses
       // the result; from Config it returns to home. Either way -> idle/home.
       if (state == SENSOR_RESULT_HOLD || g_uiCur == UI_CONFIG) {
+        g_inConfig = false;         // explicit exit clears the Config modal
         enterIdle(nowMs);            // auto: re-arm; manual: back to home
       }
       break;
@@ -1425,6 +961,7 @@ static void ui_on_click(int id) {
 // the result screen is requested explicitly when a putt is accepted, and screen
 // changes within RESULT_HOLD are driven by tap events.
 static void ui_sync_from_state(uint32_t nowMs) {
+  if (g_inConfig) return;   // Config is user-controlled; don't auto-sync over it.
   switch (state) {
     case SENSOR_NO_IMU:
       ui_request(UI_NOIMU);
@@ -1464,150 +1001,6 @@ static void ui_sync_from_state(uint32_t nowMs) {
   }
 }
 
-// Convert a decided PuttResult into g_uiResult (+ trace arrays) and drive the
-// app into RESULT_HOLD showing UI_RESULT. Applies the face/path zero offsets.
-// NOTE: retained for reference/comparison but no longer called -- the legacy
-// detector owns results now (see buildLegacyUiResult).
-static void acceptPuttResult(uint32_t nowMs) __attribute__((unused));
-static void acceptPuttResult(uint32_t nowMs) {
-  PuttResult r = g_putt.result();
-
-  g_lastRawFaceDeg = r.faceDeg;
-  g_lastRawPathDeg = r.pathDeg;
-  g_haveLastResult = true;
-
-  float face = r.faceDeg - faceZeroDeg;
-  float path = r.pathDeg - pathZeroDeg;
-
-  g_uiResult.faceDeg = fabsf(face);
-  g_uiResult.faceLR  = face >= 0.0f ? 'R' : 'L';
-  g_uiResult.pathDeg = fabsf(path);
-  g_uiResult.pathOut = path >= 0.0f;
-  g_uiResult.tempo   = r.tempo;
-  g_uiResult.backMs  = r.backswingMs;
-  g_uiResult.fwdMs   = r.forwardMs;
-  g_uiResult.durMs   = r.durationMs;
-  g_uiResult.impactOffMs = 0;  // PuttResult has no impact offset; UI shows 0
-
-  int n = r.traceCount;
-  if (n > TRACE_CAP) n = TRACE_CAP;
-  for (int i = 0; i < n; i++) {
-    g_traceX[i] = r.trace[i].x;
-    g_traceY[i] = r.trace[i].y;
-  }
-  g_uiResult.traceX = g_traceX;
-  g_uiResult.traceY = g_traceY;
-  g_uiResult.traceCount = n;
-  g_uiResult.impactIndex = (int)r.impactIndex;
-
-  state = SENSOR_RESULT_HOLD;
-  stateSinceMs = nowMs;
-  requireStillnessForReady = false;
-  resetBuffer();
-  ui_request(UI_RESULT, true);
-}
-
-// Build g_uiResult (+ trace arrays) from the LEGACY stroke window using the
-// OrientationTracker, then drive the app into RESULT_HOLD showing UI_RESULT.
-// Mirrors acceptPuttResult()/PuttDetector::buildResult() conventions exactly:
-//   - face sign: open=R/positive (negate decompose().faceDeg)
-//   - zero offsets + R/L (face) and OUT/IN (path) applied identically
-//   - trace from headPoint(axis, 1.0f): y=forward sweep, x=lateral
-// startIndex/endIndex index into orderedBuffer[] (the buffered detection window).
-static void buildLegacyUiResult(uint16_t startIndex, uint16_t endIndex) {
-  uint32_t nowMs = orderedBuffer[endIndex].ms;
-  const Vec3 axis = swing.gyroAxis;
-  const Vec3 grav = gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f};
-
-  // Locate the sample whose ms is closest to the legacy impact time. Fallback to
-  // the forward (negative-projection) gyro peak, else the window midpoint.
-  uint16_t impIdx = startIndex + (endIndex - startIndex) / 2;
-  if (swing.impactDetected) {
-    uint32_t bestDelta = 0xFFFFFFFFu;
-    for (uint16_t i = startIndex; i <= endIndex; i++) {
-      uint32_t ms = orderedBuffer[i].ms;
-      uint32_t d = ms > swing.impactMs ? ms - swing.impactMs : swing.impactMs - ms;
-      if (d < bestDelta) { bestDelta = d; impIdx = i; }
-    }
-  } else {
-    float bestFwd = 0.0f;
-    bool found = false;
-    for (uint16_t i = startIndex; i <= endIndex; i++) {
-      float proj = dot3(orderedBuffer[i].gyroRad, axis) * RAD_TO_DEG_F;
-      if (-proj > bestFwd) { bestFwd = -proj; impIdx = i; found = true; }
-    }
-    if (!found) impIdx = startIndex + (endIndex - startIndex) / 2;
-  }
-
-  // Face/path: integrate orientation from address up to impact, then decompose.
-  OrientationTracker ot;
-  ot.begin(grav);
-  {
-    uint32_t prevMs = orderedBuffer[startIndex].ms;
-    for (uint16_t i = startIndex + 1; i <= impIdx; i++) {
-      float dt = (float)(orderedBuffer[i].ms - prevMs) / 1000.0f;
-      prevMs = orderedBuffer[i].ms;
-      if (dt > 0.0f && dt < 0.1f) ot.integrate(orderedBuffer[i].gyroRad, dt);
-    }
-  }
-  StrokeAngles a = ot.decompose(axis);
-  float fr = -a.faceDeg;   // firmware sign convention: open=R/positive
-  float pr = a.pathDeg;
-  g_uiResult.faceDeg = fabsf(fr - faceZeroDeg);
-  g_uiResult.faceLR  = (fr - faceZeroDeg) >= 0.0f ? 'R' : 'L';
-  g_uiResult.pathDeg = fabsf(pr - pathZeroDeg);
-  g_uiResult.pathOut = (pr - pathZeroDeg) >= 0.0f;
-
-  // Trace: integrate across the FULL window, sampling head position, downsample
-  // to <= TRACE_CAP points. Impact = the downsampled point nearest impIdx.
-  int n = (int)(endIndex - startIndex) + 1;
-  int stride = (n + TRACE_CAP - 1) / TRACE_CAP;   // ceil(n / TRACE_CAP) >= 1
-  if (stride < 1) stride = 1;
-  OrientationTracker ot2;
-  ot2.begin(grav);
-  int outCount = 0;
-  int impactOut = 0;
-  uint32_t prevMs = orderedBuffer[startIndex].ms;
-  for (int k = 0; k < n && outCount < TRACE_CAP; k++) {
-    uint16_t i = (uint16_t)(startIndex + k);
-    if (k > 0) {
-      float dt = (float)(orderedBuffer[i].ms - prevMs) / 1000.0f;
-      prevMs = orderedBuffer[i].ms;
-      if (dt > 0.0f && dt < 0.1f) ot2.integrate(orderedBuffer[i].gyroRad, dt);
-    }
-    if (k % stride == 0) {
-      HeadPoint hp = ot2.headPoint(axis, 1.0f);
-      g_traceX[outCount] = hp.x;
-      g_traceY[outCount] = hp.y;
-      if (i <= impIdx) impactOut = outCount;   // last point at/before impact
-      outCount++;
-    }
-  }
-  g_uiResult.traceX = g_traceX;
-  g_uiResult.traceY = g_traceY;
-  g_uiResult.traceCount = outCount;
-  g_uiResult.impactIndex = impactOut < outCount ? impactOut : (outCount > 0 ? outCount - 1 : 0);
-
-  // Timing comes from the legacy lastResult (just filled by finishSwing).
-  g_uiResult.tempo  = lastResult.tempo;
-  g_uiResult.backMs = lastResult.backswingMs;
-  g_uiResult.fwdMs  = lastResult.forwardMs;
-  g_uiResult.durMs  = lastResult.durationMs;
-  g_uiResult.impactOffMs =
-      swing.impactDetected ? (int)(swing.impactMs - swing.startMs) : 0;
-
-  // Cache raw angles so the ZERO button can re-null against this stroke.
-  g_lastRawFaceDeg = fr;
-  g_lastRawPathDeg = pr;
-  g_haveLastResult = true;
-
-  state = SENSOR_RESULT_HOLD;
-  stateSinceMs = nowMs;
-  requireStillnessForReady = false;
-  resetBuffer();
-  ui_request(UI_RESULT, true);
-}
-
 // Fallback result builder for the REAL-TIME finishSwing() path (no buffered
 // window). The buffered path is the primary detector; this only fires if the
 // live FSM accepts a stroke that the buffered path didn't. It reuses the legacy
@@ -1615,6 +1008,7 @@ static void buildLegacyUiResult(uint16_t startIndex, uint16_t endIndex) {
 // the live tracePoints[] so the result is not lost. Mirrors the zero/R-L/OUT-IN
 // conventions used by the on-screen stats (lastResult.* - faceZeroDeg, etc.).
 static void buildLegacyUiResultRealtime(uint32_t nowMs) {
+  if (g_inConfig) return;   // don't pop a result over the Config screen
   // Face/path from the OrientationTracker integrated live over the stroke. If
   // impact was detected we use the pose captured AT impact; otherwise decompose
   // the final accumulated orientation (sign convention: open=R, closed=L).
@@ -1671,18 +1065,6 @@ static void buildLegacyUiResultRealtime(uint32_t nowMs) {
   requireStillnessForReady = false;
   resetBuffer();
   ui_request(UI_RESULT, true);
-}
-
-// Should an accepted g_putt event surface a result right now? In AUTO we always
-// show results; in MANUAL only inside the armed window (after the countdown),
-// i.e. once we've reached SENSOR_READY/SENSOR_SWING and not while idling on the
-// manual HOME or during the COUNTDOWN.
-static bool resultsAllowedNow(void) __attribute__((unused));
-static bool resultsAllowedNow(void) {
-  if (appMode == MODE_AUTO) {
-    return true;
-  }
-  return state == SENSOR_READY || state == SENSOR_SWING;
 }
 
 static void initLvgl(void) {
@@ -2144,26 +1526,6 @@ static void printResult(const char *prefix, const char *reason, uint32_t nowMs) 
   Serial.println(swing.samples);
 }
 
-static void printRollingDebug(uint32_t nowMs, const char *reason, float peakDps, float peakLinear, uint16_t count) {
-  if ((peakDps < 2.0f && peakLinear < 0.15f) || nowMs - lastRollingDebugMs < 750) {
-    return;
-  }
-
-  lastRollingDebugMs = nowMs;
-  Serial.print(F("ROLLING_WAIT,reason="));
-  Serial.print(reason);
-  Serial.print(F(",peak_gyro_dps="));
-  Serial.print(peakDps, 1);
-  Serial.print(F(",start_threshold_dps="));
-  Serial.print(START_GYRO_DPS, 1);
-  Serial.print(F(",stop_threshold_dps="));
-  Serial.print(STOP_GYRO_DPS, 1);
-  Serial.print(F(",peak_linear_mps2="));
-  Serial.print(peakLinear, 2);
-  Serial.print(F(",buffer_samples="));
-  Serial.println(count);
-}
-
 static void logRawStrokeWindow(uint16_t startIndex, uint16_t endIndex) {
   if (!ENABLE_RAW_STROKE_LOG) {
     return;
@@ -2391,14 +1753,6 @@ static void finishSwing(uint32_t nowMs) {
   resetBuffer();
 }
 
-static void showFinalResult(uint32_t nowMs) {
-  resultPage = RESULT_PAGE_TRACE;
-  resultPageShownMs = nowMs;
-  showResultPage();
-  state = SENSOR_RESULT_HOLD;
-  stateSinceMs = nowMs;
-}
-
 static void startSwing(const Vec3 &gyroRad, uint32_t triggerMs) {
   uint32_t startMs = bufferedSwingStartMs(triggerMs);
   resetSwing(startMs);
@@ -2444,339 +1798,6 @@ static void startSwing(const Vec3 &gyroRad, uint32_t triggerMs) {
     Serial.print(F(",address_still_ms="));
     Serial.println(swing.preStillMs);
   }
-}
-
-static bool recentBufferIsQuiet(uint16_t count) {
-  if (count < 4) {
-    return false;
-  }
-
-  for (uint16_t i = count - 3; i < count; i++) {
-    if (orderedBuffer[i].gyroDps > STOP_GYRO_DPS + 0.5f) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static Vec3 candidateAxisFrom(uint16_t startIndex, uint16_t endIndex, float minDps) {
-  Vec3 axis = {0.0f, 0.0f, 0.0f};
-  bool axisSet = false;
-  uint8_t used = 0;
-
-  for (uint16_t i = startIndex; i <= endIndex && used < 12; i++) {
-    if (orderedBuffer[i].gyroDps < minDps) {
-      continue;
-    }
-
-    Vec3 sample = orderedBuffer[i].gyroRad;
-    if (!axisSet) {
-      axis = sample;
-      axisSet = true;
-    } else {
-      if (dot3(sample, axis) < 0.0f) {
-        sample = scale3(sample, -1.0f);
-      }
-      axis = add3(axis, sample);
-    }
-    used++;
-  }
-
-  return normalize3(axis);
-}
-
-static Vec3 orientAxisForBackswing(uint16_t startIndex, uint16_t endIndex, Vec3 axis, float minDps) {
-  for (uint16_t i = startIndex; i <= endIndex; i++) {
-    if (orderedBuffer[i].gyroDps < minDps) {
-      continue;
-    }
-
-    if (dot3(orderedBuffer[i].gyroRad, axis) < 0.0f) {
-      return scale3(axis, -1.0f);
-    }
-    return axis;
-  }
-
-  return axis;
-}
-
-static void processBufferedSample(uint16_t index, bool learnAxis) {
-  const BufferedSample &s = orderedBuffer[index];
-  swing.samples++;
-  if (s.gyroDps >= STOP_GYRO_DPS) {
-    swing.lastMotionMs = s.ms;
-  }
-
-  if (learnAxis && !swing.transitionDetected && s.ms - swing.startMs <= AXIS_LEARN_MS && s.gyroDps > PRETRIGGER_GYRO_DPS) {
-    Vec3 axisSample = s.gyroRad;
-    if (dot3(axisSample, swing.gyroAxis) < 0.0f) {
-      axisSample = scale3(axisSample, -1.0f);
-    }
-    swing.axisAccum = add3(swing.axisAccum, axisSample);
-    if (mag3(swing.axisAccum) > 0.0001f) {
-      swing.gyroAxis = normalize3(swing.axisAccum);
-    }
-  }
-
-  float projectionDps = dot3(s.gyroRad, swing.gyroAxis) * RAD_TO_DEG_F;
-  updateSwingFeatures(s.ms, s.gyroDps, s.gyroRad, s.linearMps2, projectionDps);
-
-  // Advance orientation BEFORE plotting the head so the trace point reflects
-  // this sample's pose.
-  if (g_orientActive) {
-    float odt = (float)(s.ms - orientLastMs) / 1000.0f;
-    orientLastMs = s.ms;
-    if (odt > 0.0f && odt < 0.1f) {
-      g_orient.integrate(s.gyroRad, odt);  // gyroRad is rad/s in the body frame
-    }
-  }
-  recordHeadTrace(s.ms, s.gyroRad, projectionDps);
-
-  if (index > 0) {
-    Vec3 delta = sub3(s.linearAccelMps2, orderedBuffer[index - 1].linearAccelMps2);
-    float accelDelta = mag3(delta);
-    if (accelDelta > swing.maxAccelDeltaMps2) {
-      swing.maxAccelDeltaMps2 = accelDelta;
-    }
-    if (!swing.impactDetected && swing.transitionDetected && accelDelta >= IMPACT_ACCEL_DELTA_MPS2) {
-      swing.impactDetected = true;
-      swing.impactMs = s.ms;
-      StrokeAngles ang = g_orient.decompose(swing.gyroAxis);
-      swing.faceAngleImpactDeg = -ang.faceDeg;  // sign convention: open=R, closed=L
-      swing.pathAngleImpactDeg = ang.pathDeg;
-      swing.faceAngleImpactCaptured = true;
-      traceImpactIndex = traceCount > 0 ? traceCount - 1 : 0;
-    }
-  }
-
-  if (fabsf(projectionDps) > swing.maxGyroDps) {
-    swing.maxGyroDps = fabsf(projectionDps);
-  }
-
-  if (!swing.transitionDetected &&
-      s.ms - swing.startMs >= MIN_BACKSWING_MS &&
-      swing.backImpulseDeg >= MIN_BACK_IMPULSE_DEG &&
-      projectionDps < -GYRO_REVERSAL_DPS) {
-    swing.transitionDetected = true;
-    swing.transitionMs = s.ms;
-    traceTransitionIndex = traceCount;
-  }
-
-  if (swing.transitionDetected && projectionDps < 0.0f) {
-    float forwardGyroDps = -projectionDps;
-    if (forwardGyroDps > swing.maxForwardGyroDps) {
-      swing.maxForwardGyroDps = forwardGyroDps;
-    }
-
-    float endThreshold = swing.maxForwardGyroDps * FORWARD_END_FRACTION;
-    if (endThreshold < STOP_GYRO_DPS) {
-      endThreshold = STOP_GYRO_DPS;
-    }
-
-    if (!swing.forwardEndDetected &&
-        swing.maxForwardGyroDps >= MIN_PUTT_GYRO_DPS &&
-        s.ms - swing.transitionMs >= MIN_FORWARD_MS &&
-        forwardGyroDps <= endThreshold) {
-      swing.forwardEndDetected = true;
-      swing.forwardEndMs = s.ms;
-    }
-  }
-}
-
-static void estimateEnvelopeTransition(uint16_t startIndex, uint16_t endIndex) {
-  if (swing.transitionDetected || endIndex <= startIndex + MIN_PUTT_SAMPLES) {
-    return;
-  }
-
-  uint32_t startMs = orderedBuffer[startIndex].ms;
-  uint32_t endMs = orderedBuffer[endIndex].ms;
-  uint32_t durationMs = endMs - startMs;
-  if (durationMs < 300) {
-    return;
-  }
-
-  uint32_t targetMs = startMs + (durationMs * 35UL) / 100UL;
-  uint16_t splitIndex = startIndex;
-  for (uint16_t i = startIndex; i <= endIndex; i++) {
-    splitIndex = i;
-    if (orderedBuffer[i].ms >= targetMs) {
-      break;
-    }
-  }
-
-  swing.transitionDetected = true;
-  swing.transitionMs = orderedBuffer[splitIndex].ms;
-  swing.forwardEndDetected = true;
-  swing.forwardEndMs = endMs;
-  traceTransitionIndex = traceCount > 0 ? (traceCount * 35U) / 100U : 0;
-
-  swing.maxBackGyroDps = 0.0f;
-  swing.maxForwardGyroDps = 0.0f;
-  swing.backImpulseDeg = 0.0f;
-  swing.forwardImpulseDeg = 0.0f;
-
-  for (uint16_t i = startIndex + 1; i <= endIndex; i++) {
-    uint32_t deltaMs = orderedBuffer[i].ms - orderedBuffer[i - 1].ms;
-    if (deltaMs == 0 || deltaMs > 80) {
-      continue;
-    }
-
-    float dt = (float)deltaMs / 1000.0f;
-    float projectionDps = fabsf(dot3(orderedBuffer[i].gyroRad, swing.gyroAxis) * RAD_TO_DEG_F);
-    if (i <= splitIndex) {
-      swing.backImpulseDeg += projectionDps * dt;
-      if (projectionDps > swing.maxBackGyroDps) {
-        swing.maxBackGyroDps = projectionDps;
-      }
-    } else {
-      swing.forwardImpulseDeg += projectionDps * dt;
-      if (projectionDps > swing.maxForwardGyroDps) {
-        swing.maxForwardGyroDps = projectionDps;
-      }
-    }
-  }
-}
-
-static bool analyzeBufferedCandidate(uint32_t nowMs, bool requireQuiet) {
-  uint16_t count = copyOrderedBuffer();
-  float peakDps = 0.0f;
-  float peakLinear = 0.0f;
-  float peakMotionScore = 0.0f;
-  int16_t peakIndex = -1;
-  for (uint16_t i = 0; i < count; i++) {
-    if (orderedBuffer[i].gyroDps > peakDps) {
-      peakDps = orderedBuffer[i].gyroDps;
-    }
-    if (orderedBuffer[i].linearMps2 > peakLinear) {
-      peakLinear = orderedBuffer[i].linearMps2;
-    }
-    float motionScore = orderedBuffer[i].gyroDps / START_GYRO_DPS +
-                        orderedBuffer[i].linearMps2 / START_LINEAR_MPS2;
-    if (motionScore > peakMotionScore) {
-      peakMotionScore = motionScore;
-      peakIndex = i;
-    }
-  }
-
-  if (count < MIN_PUTT_SAMPLES + 4) {
-    printRollingDebug(nowMs, "filling_buffer", peakDps, peakLinear, count);
-    return false;
-  }
-
-  if (requireQuiet && !recentBufferIsQuiet(count)) {
-    printRollingDebug(nowMs, "waiting_for_quiet", peakDps, peakLinear, count);
-    return false;
-  }
-
-  float requiredPeakGyro = requireQuiet ? START_GYRO_DPS : ARMED_MIN_GYRO_DPS;
-  float requiredPeakLinear = requireQuiet ? START_LINEAR_MPS2 : ARMED_MIN_LINEAR_MPS2;
-  if (peakIndex < 0 ||
-      (orderedBuffer[peakIndex].gyroDps <= requiredPeakGyro &&
-       orderedBuffer[peakIndex].linearMps2 <= requiredPeakLinear)) {
-    printRollingDebug(nowMs, "no_motion", peakDps, peakLinear, count);
-    return false;
-  }
-
-  int16_t startIndex = peakIndex;
-  uint8_t quietRun = 0;
-  for (int16_t i = peakIndex; i >= 0; i--) {
-    if (orderedBuffer[i].gyroDps < PRETRIGGER_RESET_GYRO_DPS &&
-        orderedBuffer[i].linearMps2 < PRETRIGGER_LINEAR_MPS2) {
-      quietRun++;
-      if (quietRun >= 4) {
-        startIndex = i + quietRun;
-        break;
-      }
-    } else {
-      quietRun = 0;
-      startIndex = i;
-    }
-  }
-
-  int16_t motionEndIndex = peakIndex;
-  quietRun = 0;
-  for (uint16_t i = peakIndex; i < count; i++) {
-    if (orderedBuffer[i].gyroDps < STOP_GYRO_DPS &&
-        orderedBuffer[i].linearMps2 < STOP_LINEAR_MPS2) {
-      quietRun++;
-      if (quietRun >= 8 && orderedBuffer[i].ms - orderedBuffer[startIndex].ms >= MIN_PUTT_DURATION_MS) {
-        motionEndIndex = i;
-        break;
-      }
-    } else {
-      quietRun = 0;
-      motionEndIndex = i;
-    }
-  }
-
-  if (startIndex < 4 && requireQuiet) {
-    printRollingDebug(nowMs, "not_enough_prestill", peakDps, peakLinear, count);
-    return false;
-  }
-  if (startIndex < 0) {
-    startIndex = 0;
-  }
-
-  uint16_t endIndex = motionEndIndex > startIndex ? motionEndIndex : count - 1;
-  uint32_t candidateMs = orderedBuffer[endIndex].ms - orderedBuffer[startIndex].ms;
-  if (candidateMs < MIN_PUTT_DURATION_MS + 120 && startIndex > 4) {
-    uint32_t targetStartMs = orderedBuffer[peakIndex].ms > SHORT_CANDIDATE_EXPAND_MS
-                               ? orderedBuffer[peakIndex].ms - SHORT_CANDIDATE_EXPAND_MS
-                               : 0;
-    while (startIndex > 4 && orderedBuffer[startIndex].ms > targetStartMs) {
-      startIndex--;
-    }
-  }
-
-  uint32_t preStillMs = orderedBuffer[startIndex].ms - orderedBuffer[0].ms;
-  if (!requireQuiet && preStillMs < READY_MIN_HOLD_MS) {
-    preStillMs = READY_MIN_HOLD_MS;
-  }
-  if (endIndex <= startIndex + MIN_PUTT_SAMPLES) {
-    printRollingDebug(nowMs, "too_few_candidate_samples", peakDps, peakLinear, count);
-    return false;
-  }
-
-  resetSwing(orderedBuffer[startIndex].ms);
-  zeroFaceAngleAt(orderedBuffer[startIndex].ms);
-  swing.preStillMs = preStillMs;
-  float axisThresholdDps = peakDps * 0.35f;
-  if (axisThresholdDps < PRETRIGGER_GYRO_DPS) {
-    axisThresholdDps = PRETRIGGER_GYRO_DPS;
-  }
-  swing.gyroAxis = candidateAxisFrom(startIndex, endIndex, axisThresholdDps);
-  swing.gyroAxis = orientAxisForBackswing(startIndex, endIndex, swing.gyroAxis, axisThresholdDps);
-  swing.axisAccum = swing.gyroAxis;
-  Vec3 lateral = cross3(gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f}, swing.gyroAxis);
-  swing.lateralAxis = mag3(lateral) < 0.0001f ? perpendicular3(swing.gyroAxis) : normalize3(lateral);
-  swing.traceLastMs = orderedBuffer[startIndex].ms;
-
-  // Track orientation across the whole stroke from the address pose. Gravity at
-  // address approximates the shaft axis (face-twist axis).
-  g_orient.begin(gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f});
-  g_orientActive = true;
-  orientLastMs = orderedBuffer[startIndex].ms;
-
-  for (uint16_t i = startIndex; i <= endIndex; i++) {
-    processBufferedSample(i, true);
-  }
-  g_orientActive = false;
-  estimateEnvelopeTransition(startIndex, endIndex);
-  logRawStrokeWindow(startIndex, endIndex);
-
-  uint16_t uiStart = (uint16_t)startIndex;
-  uint16_t uiEnd = (uint16_t)endIndex;
-  finishSwing(orderedBuffer[endIndex].ms);
-  if (g_lastFinishAccepted) {
-    // Legacy accepted: build the result UI from the OrientationTracker over this
-    // exact buffered window. This moves the FSM to RESULT_HOLD.
-    buildLegacyUiResult(uiStart, uiEnd);
-  }
-  return true;
-}
-
-static bool analyzeRollingBuffer(uint32_t nowMs) {
-  return analyzeBufferedCandidate(nowMs, true);
 }
 
 static void resetToReadyAfterInvalid(uint32_t nowMs) {
@@ -3223,7 +2244,6 @@ void loop() {
     // The LEGACY impact-gated detector now OWNS the result UI (it is more
     // sensitive). g_putt keeps running for the PUTTV2 serial diagnostics above
     // and side-by-side comparison, but it NO LONGER drives the result screen.
-    // (acceptPuttResult / resultsAllowedNow remain defined but unused here.)
   }
 
   float rawDps = gyroDps(sample.gyroRad);
