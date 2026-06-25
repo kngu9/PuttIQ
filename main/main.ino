@@ -17,6 +17,10 @@
 #include <Wire.h>
 #include <math.h>
 #include <nrf.h>
+#include "putt_detector.h"
+
+// New impact-triggered detector (runs alongside the legacy path for live eval).
+static PuttDetector g_putt{DetectorConfig{}};
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
@@ -122,11 +126,7 @@ enum SensorState {
   SENSOR_RESULT_HOLD
 };
 
-struct Vec3 {
-  float x;
-  float y;
-  float z;
-};
+// Vec3 now comes from imu_types.h (shared with the new detector modules).
 
 struct ImuSample {
   Vec3 accelMps2;
@@ -2495,6 +2495,18 @@ void loop() {
   }
 
   logRawCsvSample(nowUs, rawCounts);
+
+  PuttEvent pe = g_putt.update(RawSample{nowUs, rawCounts.gx, rawCounts.gy, rawCounts.gz,
+                                         rawCounts.ax, rawCounts.ay, rawCounts.az});
+  if (pe.detected) {
+    Serial.print(pe.decision == PuttDecision::Accept ? F("PUTTV2_ACCEPT,reason=ok")
+                                                     : F("PUTTV2_REJECT,reason="));
+    if (pe.decision != PuttDecision::Accept) Serial.print(pe.reason ? pe.reason : "");
+    Serial.print(F(",jerk="));    Serial.print(pe.features.impactJerk, 1);
+    Serial.print(F(",fwd_dps=")); Serial.print(pe.features.peakForwardDps, 1);
+    Serial.print(F(",axis="));    Serial.print(pe.features.axisConsistency, 2);
+    Serial.print(F(",dur_ms="));  Serial.println(pe.features.durationMs);
+  }
 
   float rawDps = gyroDps(sample.gyroRad);
   Vec3 gyro = filteredGyroSample(sample.gyroRad);
