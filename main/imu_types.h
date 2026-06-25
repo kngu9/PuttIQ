@@ -61,6 +61,10 @@ struct DetectorConfig {
   uint32_t minPostSettleMs = 120;
   bool  requireImpact = false;     // flipped on later if data supports it
   float impactJerkMps3 = 3.4f;     // jerk threshold (m/s^2 between samples)
+  // Impact-triggered windowing
+  uint32_t windowPreMs  = 600;   // capture this long BEFORE the impact
+  uint32_t windowPostMs = 400;   // and this long AFTER (contact is late in the stroke)
+  uint32_t impactRefractoryMs = 800;  // ignore new impacts this long after one
 };
 
 struct PuttEvent {
