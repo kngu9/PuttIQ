@@ -1410,7 +1410,7 @@ static void armForSwing(uint32_t nowMs) {
   readyStillSinceMs = 0;
   readyPeakGyroDps = 0.0f;
   readyStartCount = 0;
-  fsmArmed = false;
+  fsmArmed = true;  // ready == armed: no separate stillness-arm step
 
   printReadyEvent(nowMs);
   showReady();
