@@ -21,6 +21,8 @@
 
 // New impact-triggered detector (runs alongside the legacy path for live eval).
 static PuttDetector g_putt{DetectorConfig{}};
+static uint32_t g_v2ShowUntilMs = 0;   // screen-on deadline for a detected putt
+static bool g_v2ScreenActive = false;  // true while a putt result is on screen
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
@@ -474,6 +476,25 @@ static void showResult(bool detected, const char *reason, uint32_t durationMs, f
   } else {
     drawScreen("REJECT", reason, durationLine, TFT_ORANGE);
   }
+}
+
+// --- New detector display: blank unless a stroke+impact putt is detected ---
+static void blankScreenV2() {
+  if (!displayReady) return;
+  if (screenSpriteReady) {
+    screenSprite.fillSprite(TFT_BLACK);
+    screenSprite.pushSprite(0, 0);
+  } else {
+    tft.fillScreen(TFT_BLACK);
+  }
+}
+
+static void showPuttV2(const PuttFeatures &f) {
+  char l1[20], l2[24];
+  snprintf(l1, sizeof(l1), "%d dps", (int)(f.peakForwardDps + 0.5f));
+  snprintf(l2, sizeof(l2), "%lu ms  j%d",
+           (unsigned long)f.durationMs, (int)(f.impactJerk + 0.5f));
+  drawScreen("PUTT", l1, l2, TFT_CYAN);
 }
 
 static void drawPageDotsSprite(uint8_t pageIndex) {
@@ -1413,7 +1434,7 @@ static void armForSwing(uint32_t nowMs) {
   fsmArmed = false;
 
   printReadyEvent(nowMs);
-  showReady();
+  if (!g_v2ScreenActive) blankScreenV2();  // idle screen is blank (display driven by g_putt)
 }
 
 static uint32_t forwardMsFor(uint32_t nowMs) {
@@ -1708,7 +1729,7 @@ static void finishSwing(uint32_t nowMs) {
     state = SENSOR_RESULT_HOLD;
     stateSinceMs = nowMs;
     requireStillnessForReady = false;
-    showResultPage();
+    // showResultPage();  // display now driven by g_putt (stroke+impact) in loop()
     printResult("PUTT_DETECTED", nullptr, nowMs);
     logRawStrokeRecent(swing.startMs, nowMs);
   } else {
@@ -1725,7 +1746,7 @@ static void finishSwing(uint32_t nowMs) {
 static void showFinalResult(uint32_t nowMs) {
   resultPage = RESULT_PAGE_TEMPO;
   resultPageShownMs = nowMs;
-  showResultPage();
+  // showResultPage();  // display now driven by g_putt (stroke+impact) in loop()
   state = SENSOR_RESULT_HOLD;
   stateSinceMs = nowMs;
 }
@@ -2506,6 +2527,17 @@ void loop() {
     Serial.print(F(",fwd_dps=")); Serial.print(pe.features.peakForwardDps, 1);
     Serial.print(F(",axis="));    Serial.print(pe.features.axisConsistency, 2);
     Serial.print(F(",dur_ms="));  Serial.println(pe.features.durationMs);
+  }
+
+  // Screen lights up ONLY for a detected stroke that also has an impact in its
+  // window; otherwise it stays blank (auto-blanks a few seconds after a result).
+  if (pe.detected && pe.decision == PuttDecision::Accept && pe.features.impactPresent) {
+    showPuttV2(pe.features);
+    g_v2ShowUntilMs = nowMs + 4000;
+    g_v2ScreenActive = true;
+  } else if (g_v2ScreenActive && (int32_t)(nowMs - g_v2ShowUntilMs) >= 0) {
+    blankScreenV2();
+    g_v2ScreenActive = false;
   }
 
   float rawDps = gyroDps(sample.gyroRad);
