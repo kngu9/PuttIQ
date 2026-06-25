@@ -55,8 +55,33 @@ static void test_walk_features() {
   CHECK(f.axisConsistency < 0.85f || f.reversalCount > 3 || f.linAngRatio > 0.6f);
 }
 
+static void test_asymmetric_lobes() {
+  std::vector<DerivedSample> v;
+  auto push = [&](uint32_t t, float dpsX){
+    Vec3 g{dpsX*DEG_TO_RAD,0,0};
+    v.push_back(DerivedSample{t, g, std::fabs(dpsX), {0,0,0}, 0, true});
+  };
+  uint32_t t=0;
+  for (int i=0;i<40;++i){push(t,0);t+=5000;}
+  for (int i=0;i<30;++i){push(t,-60*std::sin(M_PI*i/30));t+=5000;} // big backswing
+  for (int i=0;i<30;++i){push(t, 20*std::sin(M_PI*i/30));t+=5000;} // small forward (later)
+  for (int i=0;i<40;++i){push(t,0);t+=5000;}
+  PuttFeatures f = extractFeatures(v.data(), (int)v.size());
+  CHECK_NEAR(f.peakForwardDps, 20.0f, 4.0f); // forward lobe, not the 60 backswing
+}
+
+static void test_all_quiet() {
+  std::vector<DerivedSample> v;
+  for (int i=0;i<50;++i) v.push_back(DerivedSample{(uint32_t)(i*5000),{0,0,0},0,{0,0,0},0,true});
+  PuttFeatures f = extractFeatures(v.data(), (int)v.size());
+  CHECK(f.peakForwardDps < 1.0f);
+  CHECK(f.durationMs == 0);
+}
+
 int main() {
   RUN(test_putt_features);
   RUN(test_walk_features);
+  RUN(test_asymmetric_lobes);
+  RUN(test_all_quiet);
   REPORT();
 }
