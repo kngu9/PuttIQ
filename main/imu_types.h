@@ -61,7 +61,7 @@ struct DetectorConfig {
   uint32_t minPostSettleMs = 0;   // disabled: motion continues after the stroke
   uint32_t maxWindowMs = 1000;    // force-decide a candidate after this long
   bool  requireImpact = false;     // flipped on later if data supports it
-  float impactJerkMps3 = 1.0f;  // screen-gate proxy; ball impact is faint at the grip (tune later)
+  float impactJerkMps3 = 3.4f;     // jerk threshold (m/s^2 between samples)
   // Impact-triggered windowing
   uint32_t windowPreMs  = 600;   // capture this long BEFORE the impact
   uint32_t windowPostMs = 400;   // and this long AFTER (contact is late in the stroke)
