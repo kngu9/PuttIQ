@@ -878,7 +878,9 @@ static void showTracePage() {
     float pathDx = tracePoints[traceCount - 1].x - tracePoints[startIndex].x;
     float xSign = pathDx < 0.0f ? -1.0f : 1.0f;
 
-    // Clubhead arc polyline in white, faked 2px by drawing twice offset 1px in x.
+    // Clubhead arc polyline, faked 2px by drawing twice offset 1px in x.
+    // Approach (before impact) is dim grey; follow-through (after) is white, so
+    // the eye follows the stroke INTO the ball.
     uint16_t pointCount = traceCount - startIndex;
     uint16_t step = pointCount > 24 ? pointCount / 24 : 1;
     int16_t prevX = ballX + (int16_t)((tracePoints[startIndex].x - centerRefX) * xSign * scale);
@@ -886,20 +888,19 @@ static void showTracePage() {
     for (uint16_t i = startIndex + step; i < traceCount; i += step) {
       int16_t x = ballX + (int16_t)((tracePoints[i].x - centerRefX) * xSign * scale);
       int16_t y = ballY + (int16_t)((tracePoints[i].y - centerRefY) * scale);
-      safeDrawLine(prevX, prevY, x, y, TFT_WHITE);
-      safeDrawLine(prevX + 1, prevY, x + 1, y, TFT_WHITE);
+      uint16_t color = (i <= impactIndex) ? UI_GREY : TFT_WHITE;
+      safeDrawLine(prevX, prevY, x, y, color);
+      safeDrawLine(prevX + 1, prevY, x + 1, y, color);
       prevX = x;
       prevY = y;
     }
 
-    // Small amber dot at the impact index on the arc.
-    int16_t impX = ballX + (int16_t)((tracePoints[impactIndex].x - centerRefX) * xSign * scale);
-    int16_t impY = ballY + (int16_t)((tracePoints[impactIndex].y - centerRefY) * scale);
-    activeFillCircle(clampScreenCoord(impX), clampScreenCoord(impY), 3, UI_AMBER);
+    // The impact point maps to screen center (the trace is centered on it).
+    // Draw the ball there with an amber contact ring so it's unmistakable.
+    activeFillCircle(ballX, ballY, 6, TFT_WHITE);
+    activeDrawCircle(ballX, ballY, 6, UI_GREY);
+    activeDrawCircle(ballX, ballY, 9, UI_AMBER);
   }
-
-  // Amber impact point at the ball / center.
-  activeFillCircle(ballX, ballY, 5, UI_AMBER);
 
   // FACE chip (top).
   drawCenteredSprite("FACE", 66, 1, TFT_DARKGREY);
