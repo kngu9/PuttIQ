@@ -507,30 +507,35 @@ static void drawModeToggleSprite() {
   drawTextAtSprite("MAN", 147, 46, 1, appMode == MODE_MANUAL ? TFT_BLACK : UI_GREY);
 }
 
-// Auto home (listening) OR manual post-countdown "putt now" prompt.
-static void showReady() {
+// Beating "listening" indicator: a pulsing amber dot + "listening". Used while
+// armed and waiting for a stroke, in BOTH auto home and manual post-countdown.
+static void drawListeningFrame(uint32_t nowMs, bool showToggle) {
   if (!displayReady) {
     return;
   }
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-    if (appMode == MODE_AUTO) {
-      drawModeToggleSprite();
-      drawCenteredSprite("PuttIQ", 104, 3, TFT_WHITE);
-      screenSprite.fillCircle(120, 150, 4, UI_AMBER);
-      drawCenteredSprite("listening", 166, 1, UI_GREY);
-    } else {
-      drawCenteredSprite("PUTT", 96, 3, UI_AMBER);
-      drawCenteredSprite("make your stroke", 136, 1, TFT_WHITE);
-      drawCenteredSprite("tap to cancel", 168, 1, UI_GREY);
-    }
-    screenSprite.pushSprite(0, 0);
+  if (!screenSpriteReady) {
+    tft.fillScreen(TFT_BLACK);
+    tft.drawCircle(120, 120, 118, TFT_WHITE);
+    drawCentered("listening", 112, 2, TFT_WHITE);
     return;
   }
-  tft.fillScreen(TFT_BLACK);
-  tft.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCentered(appMode == MODE_AUTO ? "PuttIQ" : "PUTT", 104, 3, TFT_WHITE);
+  screenSprite.fillSprite(TFT_BLACK);
+  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+  if (showToggle) {
+    drawModeToggleSprite();
+  }
+  // Heartbeat: radius eases 6 -> ~16 -> 6 about once per ~1.1s.
+  float phase = (float)(nowMs % 1100) / 1100.0f;
+  float pulse = 0.5f - 0.5f * cosf(phase * 6.2831853f);  // smooth 0..1..0
+  int16_t r = 6 + (int16_t)(pulse * 10.0f);
+  screenSprite.fillCircle(120, 112, r, UI_AMBER);
+  drawCenteredSprite("listening", 150, 2, TFT_WHITE);
+  screenSprite.pushSprite(0, 0);
+}
+
+// Drawn once on arming; the loop animates it via updateListeningAnim().
+static void showReady() {
+  drawListeningFrame(millis(), appMode == MODE_AUTO);
 }
 
 // Manual-mode home: toggle + large START button (no detection running).
@@ -1789,6 +1794,10 @@ static void finishSwing(uint32_t nowMs) {
   uint32_t forwardMs = forwardMsFor(nowMs);
   int score = puttScore(durationMs, backswingMs, forwardMs);
   const char *rejectReason = nullptr;
+  // Manual mode: the user pressed START and deliberately putt, so accept any
+  // structurally-valid stroke. The strict gates (motion/score/impact) exist only
+  // to suppress AUTO-mode false positives.
+  bool manual = (appMode == MODE_MANUAL);
 
   if (durationMs < MIN_PUTT_DURATION_MS) {
     rejectReason = "too_short";
@@ -1796,21 +1805,21 @@ static void finishSwing(uint32_t nowMs) {
     rejectReason = "too_long";
   } else if (swing.samples < MIN_PUTT_SAMPLES) {
     rejectReason = "too_few_samples";
-  } else if (armedCaptureEvaluation &&
+  } else if (!manual && armedCaptureEvaluation &&
              swing.maxGyroDps < ARMED_MIN_GYRO_DPS &&
              swing.maxLinearMps2 < ARMED_MIN_LINEAR_MPS2) {
     rejectReason = "no_motion";
-  } else if (!armedCaptureEvaluation &&
+  } else if (!manual && !armedCaptureEvaluation &&
              swing.maxGyroDps < MIN_PUTT_GYRO_DPS &&
              swing.maxLinearMps2 < START_LINEAR_MPS2) {
     rejectReason = "weak_motion";
   } else if (swing.maxLinearMps2 > MAX_PUTT_LINEAR_MPS2) {
     rejectReason = "too_much_linear";
-  } else if (!armedCaptureEvaluation &&
+  } else if (!manual && !armedCaptureEvaluation &&
              (score < MIN_PUTT_SCORE || (!swing.transitionDetected && !hasStrokeLikeEnvelope(durationMs)))) {
     rejectReason = "low_score";
-  } else if (!swing.impactDetected) {
-    rejectReason = "no_impact";  // a putt requires a detected stroke AND an impact
+  } else if (!manual && !swing.impactDetected) {
+    rejectReason = "no_impact";  // AUTO only: a putt requires a stroke AND an impact
   }
 
   if (rejectReason == nullptr) {
@@ -2497,21 +2506,16 @@ static void updateHomeAndCountdown(uint32_t nowMs) {
     return;
   }
 
+  // Toggle is live only on the two HOME screens: auto-listening and manual START.
+  // (Manual armed-and-waiting just lets the detector catch the stroke.)
   bool onHome = (state == SENSOR_HOME) ||
                 (state == SENSOR_READY && appMode == MODE_AUTO);
-  bool manualArmed = (state == SENSOR_READY && appMode == MODE_MANUAL);
-  if (!onHome && !manualArmed) {
+  if (!onHome) {
     return;
   }
 
   TouchEvent event = pollTouchEvent(nowMs);
   if (event.gesture != TOUCH_TAP) {
-    return;
-  }
-
-  // Manual armed (post-countdown): any tap cancels back to home.
-  if (manualArmed) {
-    enterManualHome(nowMs);
     return;
   }
 
@@ -2538,6 +2542,19 @@ static void updateHomeAndCountdown(uint32_t nowMs) {
     showCountdown(5);
     return;
   }
+}
+
+// Pulse the "listening" heartbeat while armed and waiting (auto or manual).
+static uint32_t lastListenAnimMs = 0;
+static void updateListeningAnim(uint32_t nowMs) {
+  if (state != SENSOR_READY) {
+    return;
+  }
+  if (nowMs - lastListenAnimMs < 90) {
+    return;
+  }
+  lastListenAnimMs = nowMs;
+  drawListeningFrame(nowMs, appMode == MODE_AUTO);
 }
 
 static void updateResultHold(uint32_t nowMs) {
@@ -2743,6 +2760,7 @@ void loop() {
   updateSwing(nowMs, dps, gyro, linearAccel, linearMps2);
   updateResultHold(nowMs);
   updateHomeAndCountdown(nowMs);
+  updateListeningAnim(nowMs);
   printStatus(nowMs, dps);
 
   digitalWrite(LED_BUILTIN,
