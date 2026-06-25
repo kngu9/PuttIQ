@@ -4,17 +4,9 @@
 
 static const float RAD_TO_DEG = 57.2957795f;
 
-void OrientationTracker::begin(const Vec3 &gravityAtAddress, const Vec3 &swingAxis) {
+void OrientationTracker::begin(const Vec3 &gravityAtAddress) {
   qw_ = 1; qx_ = 0; qy_ = 0; qz_ = 0;
   eShaft_ = normalize3(gravityAtAddress);
-  // Orthogonalize the swing axis against the shaft (Gram-Schmidt).
-  Vec3 s = sub3(swingAxis, scale3(eShaft_, dot3(swingAxis, eShaft_)));
-  if (mag3(s) < 1e-4f) {
-    Vec3 t = (std::fabs(eShaft_.x) < 0.9f) ? Vec3{1,0,0} : Vec3{0,1,0};
-    s = sub3(t, scale3(eShaft_, dot3(t, eShaft_)));
-  }
-  eSwing_ = normalize3(s);
-  ePath_ = cross3(eShaft_, eSwing_);   // unit, completes the right-handed basis
 }
 
 void OrientationTracker::integrate(const Vec3 &w, float dt) {
@@ -28,7 +20,17 @@ void OrientationTracker::integrate(const Vec3 &w, float dt) {
   if (m > 1e-9f) { qw_/=m; qx_/=m; qy_/=m; qz_/=m; }
 }
 
-StrokeAngles OrientationTracker::decompose() const {
+StrokeAngles OrientationTracker::decompose(const Vec3 &swingAxis) const {
+  // Build the swing/path basis now (the swing axis is only known mid-stroke).
+  // Orthogonalize the swing axis against the shaft (Gram-Schmidt).
+  Vec3 sw = sub3(swingAxis, scale3(eShaft_, dot3(swingAxis, eShaft_)));
+  if (mag3(sw) < 1e-4f) {
+    Vec3 t = (std::fabs(eShaft_.x) < 0.9f) ? Vec3{1,0,0} : Vec3{0,1,0};
+    sw = sub3(t, scale3(eShaft_, dot3(t, eShaft_)));
+  }
+  Vec3 eSwing = normalize3(sw);
+  Vec3 ePath = cross3(eShaft_, eSwing);   // unit, completes the right-handed basis
+
   // Convert the quaternion to an axis-angle rotation vector (address frame).
   float w = qw_;
   if (w > 1.0f) w = 1.0f;
@@ -42,7 +44,7 @@ StrokeAngles OrientationTracker::decompose() const {
   }
   StrokeAngles a;
   a.faceDeg  = dot3(r, eShaft_) * RAD_TO_DEG;
-  a.swingDeg = dot3(r, eSwing_) * RAD_TO_DEG;
-  a.pathDeg  = dot3(r, ePath_)  * RAD_TO_DEG;
+  a.swingDeg = dot3(r, eSwing) * RAD_TO_DEG;
+  a.pathDeg  = dot3(r, ePath)  * RAD_TO_DEG;
   return a;
 }

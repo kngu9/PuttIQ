@@ -15,13 +15,16 @@ class OrientationTracker {
 public:
   // gravityAtAddress: gravity unit vector in the body frame at address
   //   (approximates "down the shaft" -> the face-twist axis).
-  // swingAxis: dominant rotation axis of the stroke (body frame), used to
-  //   orient the basis azimuth. Need not be perpendicular to the shaft.
-  void begin(const Vec3 &gravityAtAddress, const Vec3 &swingAxis);
+  // Resets the quaternion to identity; stores the shaft (face-twist) axis.
+  void begin(const Vec3 &gravityAtAddress);
   void integrate(const Vec3 &gyroRad, float dt);   // gyro in rad/s, dt in seconds
-  StrokeAngles decompose() const;
+  // swingAxis: dominant rotation axis of the stroke (body frame), used to
+  //   orient the basis azimuth. Need not be perpendicular to the shaft. The
+  //   stroke's swing axis is only known partway through the stroke, so the
+  //   swing/path basis is built here rather than at begin().
+  StrokeAngles decompose(const Vec3 &swingAxis) const;
 
 private:
   float qw_ = 1, qx_ = 0, qy_ = 0, qz_ = 0;        // orientation from address
-  Vec3 eShaft_{0,0,1}, eSwing_{1,0,0}, ePath_{0,1,0};
+  Vec3 eShaft_{0,0,1};                             // face-twist axis (address frame)
 };
