@@ -1684,6 +1684,8 @@ static void finishSwing(uint32_t nowMs) {
   } else if (!armedCaptureEvaluation &&
              (score < MIN_PUTT_SCORE || (!swing.transitionDetected && !hasStrokeLikeEnvelope(durationMs)))) {
     rejectReason = "low_score";
+  } else if (!swing.impactDetected) {
+    rejectReason = "no_impact";  // a putt requires a detected stroke AND an impact
   }
 
   if (rejectReason == nullptr) {
