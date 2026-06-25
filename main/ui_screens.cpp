@@ -42,6 +42,67 @@ static void make_clickable(lv_obj_t* obj, int id)
     lv_obj_add_event_cb(obj, ui_click_trampoline, LV_EVENT_CLICKED, nullptr);
 }
 
+// Add a clearly-distinct pressed state to a button-like widget.
+// `amberFill`: true for solid-amber buttons (dim slightly on press); false for
+// outline buttons (fill faintly amber on press). Also scales down ~5%.
+static void add_pressed_feedback(lv_obj_t* obj, bool amberFill)
+{
+    if (amberFill) {
+        lv_obj_set_style_bg_opa(obj, LV_OPA_70, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else {
+        lv_obj_set_style_bg_color(obj, lv_color_hex(COL_AMBER),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(obj, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+    lv_obj_set_style_transform_scale(obj, 243, LV_PART_MAIN | LV_STATE_PRESSED); // ~0.95 (256=1.0)
+}
+
+// Two-dot page indicator near the bottom of result/details (within the circle).
+// `active` selects which dot is amber (0 = result, 1 = details).
+static void build_page_dots(lv_obj_t* scr, int active)
+{
+    const int y = 206;
+    const int gap = 14;            // center-to-center spacing
+    const int d = 5;               // dot diameter
+    for (int i = 0; i < 2; i++) {
+        int x = CX + (i == 0 ? -gap / 2 : gap / 2);
+        lv_obj_t* dot = lv_obj_create(scr);
+        lv_obj_set_size(dot, d, d);
+        lv_obj_align(dot, LV_ALIGN_CENTER, x - CX, y - CY);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(i == active ? COL_AMBER : COL_GREY),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(dot, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+
+// A small rounded "EXIT" pill at the bottom of result/details. Grey outline +
+// grey label; expanded tap area so the effective target is >=44pt.
+static void build_exit_pill(lv_obj_t* scr)
+{
+    lv_obj_t* pill = lv_obj_create(scr);
+    lv_obj_set_size(pill, 60, 26);
+    lv_obj_align(pill, LV_ALIGN_CENTER, 0, 222 - CY);
+    lv_obj_set_style_radius(pill, 13, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(pill, lv_color_hex(COL_GREY), LV_PART_MAIN);
+    lv_obj_set_style_border_width(pill, 1, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(pill, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(pill, 12);   // 26 + 2*12 = 50pt effective tap height
+    make_clickable(pill, UI_EVT_EXIT);
+    add_pressed_feedback(pill, false);
+
+    lv_obj_t* t = lv_label_create(pill);
+    lv_label_set_text(t, "EXIT");
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(t, lv_color_hex(COL_GREY), LV_PART_MAIN);
+    lv_obj_center(t);
+}
+
 // ---- Small helpers --------------------------------------------------------
 
 static void bg_black(lv_obj_t* scr)
@@ -86,11 +147,11 @@ static lv_obj_t* filled_circle(lv_obj_t* parent, int r, uint32_t color, int x, i
 // AUTO|MAN segmented toggle at top center.
 static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
 {
-    const int W = 120, Hh = 30;
+    const int W = 120, Hh = 40;
     lv_obj_t* box = lv_obj_create(scr);
     lv_obj_set_size(box, W, Hh);
-    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 22);
-    lv_obj_set_style_radius(box, 15, LV_PART_MAIN);
+    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_set_style_radius(box, 20, LV_PART_MAIN);
     lv_obj_set_style_bg_color(box, lv_color_hex(COL_BLACK), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_color(box, lv_color_hex(COL_GREY), LV_PART_MAIN);
@@ -104,7 +165,7 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
     lv_obj_t* hi = lv_obj_create(box);
     lv_obj_set_size(hi, segW, Hh);
     lv_obj_align(hi, autoMode ? LV_ALIGN_LEFT_MID : LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_radius(hi, 15, LV_PART_MAIN);
+    lv_obj_set_style_radius(hi, 20, LV_PART_MAIN);
     lv_obj_set_style_bg_color(hi, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(hi, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(hi, 0, LV_PART_MAIN);
@@ -130,7 +191,9 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
     lv_obj_set_style_border_width(ta, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(ta, 0, LV_PART_MAIN);
     lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(ta, 10);   // 40 + 2*10 -> >=44pt effective tap
     make_clickable(ta, UI_EVT_TOGGLE_AUTO);
+    add_pressed_feedback(ta, false);
 
     lv_obj_t* tm = lv_obj_create(box);
     lv_obj_set_size(tm, segW, Hh);
@@ -139,7 +202,9 @@ static void build_mode_toggle(lv_obj_t* scr, bool autoMode)
     lv_obj_set_style_border_width(tm, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(tm, 0, LV_PART_MAIN);
     lv_obj_clear_flag(tm, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(tm, 10);   // 40 + 2*10 -> >=44pt effective tap
     make_clickable(tm, UI_EVT_TOGGLE_MAN);
+    add_pressed_feedback(tm, false);
 }
 
 void ui_build_home(lv_obj_t* scr, bool autoMode)
@@ -162,7 +227,9 @@ void ui_build_home(lv_obj_t* scr, bool autoMode)
         lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_ext_click_area(btn, 8);
         make_clickable(btn, UI_EVT_START);
+        add_pressed_feedback(btn, true);
 
         lv_obj_t* s = lv_label_create(btn);
         lv_label_set_text(s, "START");
@@ -320,11 +387,16 @@ void ui_build_result(lv_obj_t* scr, const UiResult& r)
     lv_obj_set_style_text_color(fsuf, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_align_to(fsuf, fnum, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -2);
 
-    // TEMPO block (bottom).
+    // TEMPO block (bottom). Value in DSEG7 to match the FACE readout style;
+    // label stays Montserrat grey.
     char tempo[16];
     snprintf(tempo, sizeof(tempo), "%.1f:1", (double)r.tempo);
-    label_at(scr, tempo, &lv_font_montserrat_20, COL_WHITE, CX, 150);
-    label_at(scr, "TEMPO", &lv_font_montserrat_14, COL_GREY, CX, 172);
+    label_at(scr, tempo, &dseg7_28, COL_WHITE, CX, 150);
+    label_at(scr, "TEMPO", &lv_font_montserrat_14, COL_GREY, CX, 174);
+
+    // Page indicator (result = dot 0) + EXIT affordance.
+    build_page_dots(scr, 0);
+    build_exit_pill(scr);
 
     // Tap anywhere on the result -> details.
     make_clickable(scr, UI_EVT_RESULT_BODY);
@@ -376,21 +448,27 @@ void ui_build_details(lv_obj_t* scr, const UiResult& r)
     detail_row(scr, "DUR",    dur,   y); y += step;
     detail_row(scr, "IMPACT", imp,   y); y += step;
 
-    // [ZERO] button.
+    // [ZERO] button (enlarged for a comfortable touch target).
     lv_obj_t* btn = lv_obj_create(scr);
-    lv_obj_set_size(btn, 70, 26);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 168 - CY);
-    lv_obj_set_style_radius(btn, 13, LV_PART_MAIN);
+    lv_obj_set_size(btn, 96, 40);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 166 - CY);
+    lv_obj_set_style_radius(btn, 20, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_color(btn, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
     lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(btn, 8);
     make_clickable(btn, UI_EVT_ZERO);
+    add_pressed_feedback(btn, false);
 
     lv_obj_t* z = lv_label_create(btn);
     lv_label_set_text(z, "ZERO");
     lv_obj_set_style_text_font(z, &lv_font_montserrat_16, LV_PART_MAIN);
     lv_obj_set_style_text_color(z, lv_color_hex(COL_AMBER), LV_PART_MAIN);
     lv_obj_center(z);
+
+    // Page indicator (details = dot 1) + EXIT affordance.
+    build_page_dots(scr, 1);
+    build_exit_pill(scr);
 }

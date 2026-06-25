@@ -42,7 +42,8 @@ enum UiEventId {
     UI_EVT_START,          // manual-home START button
     UI_EVT_ZERO,           // details-page ZERO button
     UI_EVT_RESULT_BODY,    // result screen background (advance to details)
-    UI_EVT_DETAILS_BODY    // details screen background (back to home/idle)
+    UI_EVT_DETAILS_BODY,   // details screen background (page back to result)
+    UI_EVT_EXIT            // EXIT affordance on result/details (back to home/idle)
 };
 
 // Optional click dispatcher. When non-null, the builders attach an

@@ -1390,6 +1390,11 @@ static void ui_on_click(int id) {
       break;
     case UI_EVT_DETAILS_BODY:
       if (state == SENSOR_RESULT_HOLD) {
+        ui_request(UI_RESULT, true); // page back to result
+      }
+      break;
+    case UI_EVT_EXIT:
+      if (state == SENSOR_RESULT_HOLD) {
         enterIdle(nowMs);            // auto: re-arm; manual: back to home
       }
       break;
