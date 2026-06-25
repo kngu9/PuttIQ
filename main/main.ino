@@ -2544,19 +2544,6 @@ static void updateHomeAndCountdown(uint32_t nowMs) {
   }
 }
 
-// Pulse the "listening" heartbeat while armed and waiting (auto or manual).
-static uint32_t lastListenAnimMs = 0;
-static void updateListeningAnim(uint32_t nowMs) {
-  if (state != SENSOR_READY) {
-    return;
-  }
-  if (nowMs - lastListenAnimMs < 90) {
-    return;
-  }
-  lastListenAnimMs = nowMs;
-  drawListeningFrame(nowMs, appMode == MODE_AUTO);
-}
-
 static void updateResultHold(uint32_t nowMs) {
   if (state != SENSOR_RESULT_HOLD) {
     return;
@@ -2760,7 +2747,6 @@ void loop() {
   updateSwing(nowMs, dps, gyro, linearAccel, linearMps2);
   updateResultHold(nowMs);
   updateHomeAndCountdown(nowMs);
-  updateListeningAnim(nowMs);
   printStatus(nowMs, dps);
 
   digitalWrite(LED_BUILTIN,
