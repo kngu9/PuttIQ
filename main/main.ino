@@ -28,6 +28,9 @@ static PuttDetector g_putt{DetectorConfig{}};
 static OrientationTracker g_orient;
 static bool g_orientActive = false;
 static uint32_t orientLastMs = 0;
+// Set by finishSwing(): true when the just-finished stroke was accepted. The
+// buffered detection path reads this to know whether to build a UI result.
+static bool g_lastFinishAccepted = false;
 // Address-calibration offsets: tap "ZERO" on the stats page after a stroke you
 // know was square/straight to null the systematic face/path bias.
 static float faceZeroDeg = 0.0f;
@@ -1450,6 +1453,9 @@ static void ui_sync_from_state(uint32_t nowMs) {
 
 // Convert a decided PuttResult into g_uiResult (+ trace arrays) and drive the
 // app into RESULT_HOLD showing UI_RESULT. Applies the face/path zero offsets.
+// NOTE: retained for reference/comparison but no longer called -- the legacy
+// detector owns results now (see buildLegacyUiResult).
+static void acceptPuttResult(uint32_t nowMs) __attribute__((unused));
 static void acceptPuttResult(uint32_t nowMs) {
   PuttResult r = g_putt.result();
 
@@ -1488,10 +1494,177 @@ static void acceptPuttResult(uint32_t nowMs) {
   ui_request(UI_RESULT, true);
 }
 
+// Build g_uiResult (+ trace arrays) from the LEGACY stroke window using the
+// OrientationTracker, then drive the app into RESULT_HOLD showing UI_RESULT.
+// Mirrors acceptPuttResult()/PuttDetector::buildResult() conventions exactly:
+//   - face sign: open=R/positive (negate decompose().faceDeg)
+//   - zero offsets + R/L (face) and OUT/IN (path) applied identically
+//   - trace from headPoint(axis, 1.0f): y=forward sweep, x=lateral
+// startIndex/endIndex index into orderedBuffer[] (the buffered detection window).
+static void buildLegacyUiResult(uint16_t startIndex, uint16_t endIndex) {
+  uint32_t nowMs = orderedBuffer[endIndex].ms;
+  const Vec3 axis = swing.gyroAxis;
+  const Vec3 grav = gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f};
+
+  // Locate the sample whose ms is closest to the legacy impact time. Fallback to
+  // the forward (negative-projection) gyro peak, else the window midpoint.
+  uint16_t impIdx = startIndex + (endIndex - startIndex) / 2;
+  if (swing.impactDetected) {
+    uint32_t bestDelta = 0xFFFFFFFFu;
+    for (uint16_t i = startIndex; i <= endIndex; i++) {
+      uint32_t ms = orderedBuffer[i].ms;
+      uint32_t d = ms > swing.impactMs ? ms - swing.impactMs : swing.impactMs - ms;
+      if (d < bestDelta) { bestDelta = d; impIdx = i; }
+    }
+  } else {
+    float bestFwd = 0.0f;
+    bool found = false;
+    for (uint16_t i = startIndex; i <= endIndex; i++) {
+      float proj = dot3(orderedBuffer[i].gyroRad, axis) * RAD_TO_DEG_F;
+      if (-proj > bestFwd) { bestFwd = -proj; impIdx = i; found = true; }
+    }
+    if (!found) impIdx = startIndex + (endIndex - startIndex) / 2;
+  }
+
+  // Face/path: integrate orientation from address up to impact, then decompose.
+  OrientationTracker ot;
+  ot.begin(grav);
+  {
+    uint32_t prevMs = orderedBuffer[startIndex].ms;
+    for (uint16_t i = startIndex + 1; i <= impIdx; i++) {
+      float dt = (float)(orderedBuffer[i].ms - prevMs) / 1000.0f;
+      prevMs = orderedBuffer[i].ms;
+      if (dt > 0.0f && dt < 0.1f) ot.integrate(orderedBuffer[i].gyroRad, dt);
+    }
+  }
+  StrokeAngles a = ot.decompose(axis);
+  float fr = -a.faceDeg;   // firmware sign convention: open=R/positive
+  float pr = a.pathDeg;
+  g_uiResult.faceDeg = fabsf(fr - faceZeroDeg);
+  g_uiResult.faceLR  = (fr - faceZeroDeg) >= 0.0f ? 'R' : 'L';
+  g_uiResult.pathDeg = fabsf(pr - pathZeroDeg);
+  g_uiResult.pathOut = (pr - pathZeroDeg) >= 0.0f;
+
+  // Trace: integrate across the FULL window, sampling head position, downsample
+  // to <= TRACE_CAP points. Impact = the downsampled point nearest impIdx.
+  int n = (int)(endIndex - startIndex) + 1;
+  int stride = (n + TRACE_CAP - 1) / TRACE_CAP;   // ceil(n / TRACE_CAP) >= 1
+  if (stride < 1) stride = 1;
+  OrientationTracker ot2;
+  ot2.begin(grav);
+  int outCount = 0;
+  int impactOut = 0;
+  uint32_t prevMs = orderedBuffer[startIndex].ms;
+  for (int k = 0; k < n && outCount < TRACE_CAP; k++) {
+    uint16_t i = (uint16_t)(startIndex + k);
+    if (k > 0) {
+      float dt = (float)(orderedBuffer[i].ms - prevMs) / 1000.0f;
+      prevMs = orderedBuffer[i].ms;
+      if (dt > 0.0f && dt < 0.1f) ot2.integrate(orderedBuffer[i].gyroRad, dt);
+    }
+    if (k % stride == 0) {
+      HeadPoint hp = ot2.headPoint(axis, 1.0f);
+      g_traceX[outCount] = hp.x;
+      g_traceY[outCount] = hp.y;
+      if (i <= impIdx) impactOut = outCount;   // last point at/before impact
+      outCount++;
+    }
+  }
+  g_uiResult.traceX = g_traceX;
+  g_uiResult.traceY = g_traceY;
+  g_uiResult.traceCount = outCount;
+  g_uiResult.impactIndex = impactOut < outCount ? impactOut : (outCount > 0 ? outCount - 1 : 0);
+
+  // Timing comes from the legacy lastResult (just filled by finishSwing).
+  g_uiResult.tempo  = lastResult.tempo;
+  g_uiResult.backMs = lastResult.backswingMs;
+  g_uiResult.fwdMs  = lastResult.forwardMs;
+  g_uiResult.durMs  = lastResult.durationMs;
+  g_uiResult.impactOffMs =
+      swing.impactDetected ? (int)(swing.impactMs - swing.startMs) : 0;
+
+  // Cache raw angles so the ZERO button can re-null against this stroke.
+  g_lastRawFaceDeg = fr;
+  g_lastRawPathDeg = pr;
+  g_haveLastResult = true;
+
+  state = SENSOR_RESULT_HOLD;
+  stateSinceMs = nowMs;
+  requireStillnessForReady = false;
+  resetBuffer();
+  ui_request(UI_RESULT, true);
+}
+
+// Fallback result builder for the REAL-TIME finishSwing() path (no buffered
+// window). The buffered path is the primary detector; this only fires if the
+// live FSM accepts a stroke that the buffered path didn't. It reuses the legacy
+// estimated impact angles (lastResult.faceAngleImpactDeg/pathAngleImpactDeg) and
+// the live tracePoints[] so the result is not lost. Mirrors the zero/R-L/OUT-IN
+// conventions used by the on-screen stats (lastResult.* - faceZeroDeg, etc.).
+static void buildLegacyUiResultRealtime(uint32_t nowMs) {
+  // Face/path from the OrientationTracker integrated live over the stroke. If
+  // impact was detected we use the pose captured AT impact; otherwise decompose
+  // the final accumulated orientation (sign convention: open=R, closed=L).
+  float fr, pr;
+  if (swing.impactDetected && swing.faceAngleImpactCaptured) {
+    fr = swing.faceAngleImpactDeg;   // already sign-converted (open=R)
+    pr = swing.pathAngleImpactDeg;
+  } else {
+    StrokeAngles a = g_orient.decompose(swing.gyroAxis);
+    fr = -a.faceDeg;
+    pr = a.pathDeg;
+  }
+  g_orientActive = false;
+  g_uiResult.faceDeg = fabsf(fr - faceZeroDeg);
+  g_uiResult.faceLR  = (fr - faceZeroDeg) >= 0.0f ? 'R' : 'L';
+  g_uiResult.pathDeg = fabsf(pr - pathZeroDeg);
+  g_uiResult.pathOut = (pr - pathZeroDeg) >= 0.0f;
+
+  // Downsample the live trace into g_traceX/g_traceY.
+  int n = (int)traceCount;
+  if (n > 0) {
+    int stride = (n + TRACE_CAP - 1) / TRACE_CAP;
+    if (stride < 1) stride = 1;
+    int outCount = 0;
+    int impactOut = 0;
+    for (int i = 0; i < n && outCount < TRACE_CAP; i += stride) {
+      g_traceX[outCount] = tracePoints[i].x;
+      g_traceY[outCount] = tracePoints[i].y;
+      if ((uint16_t)i <= traceImpactIndex) impactOut = outCount;
+      outCount++;
+    }
+    g_uiResult.traceCount = outCount;
+    g_uiResult.impactIndex = impactOut < outCount ? impactOut : (outCount > 0 ? outCount - 1 : 0);
+  } else {
+    g_uiResult.traceCount = 0;
+    g_uiResult.impactIndex = 0;
+  }
+  g_uiResult.traceX = g_traceX;
+  g_uiResult.traceY = g_traceY;
+
+  g_uiResult.tempo  = lastResult.tempo;
+  g_uiResult.backMs = lastResult.backswingMs;
+  g_uiResult.fwdMs  = lastResult.forwardMs;
+  g_uiResult.durMs  = lastResult.durationMs;
+  g_uiResult.impactOffMs =
+      swing.impactDetected ? (int)(swing.impactMs - swing.startMs) : 0;
+
+  g_lastRawFaceDeg = fr;
+  g_lastRawPathDeg = pr;
+  g_haveLastResult = true;
+
+  state = SENSOR_RESULT_HOLD;
+  stateSinceMs = nowMs;
+  requireStillnessForReady = false;
+  resetBuffer();
+  ui_request(UI_RESULT, true);
+}
+
 // Should an accepted g_putt event surface a result right now? In AUTO we always
 // show results; in MANUAL only inside the armed window (after the countdown),
 // i.e. once we've reached SENSOR_READY/SENSOR_SWING and not while idling on the
 // manual HOME or during the COUNTDOWN.
+static bool resultsAllowedNow(void) __attribute__((unused));
 static bool resultsAllowedNow(void) {
   if (appMode == MODE_AUTO) {
     return true;
@@ -2126,9 +2299,10 @@ static bool hasStrokeLikeEnvelope(uint32_t durationMs) {
 }
 
 static void finishSwing(uint32_t nowMs) {
-  // g_putt now OWNS the result UI + RESULT_HOLD state. The legacy detector still
-  // runs for serial diagnostics, but it MUST NOT drive the screen or hijack a
-  // result that g_putt already surfaced.
+  // The LEGACY impact-gated detector now OWNS the result UI. Once a result is on
+  // screen (RESULT_HOLD) we must not re-detect or clobber it; the FSM stays in
+  // RESULT_HOLD until the user dismisses it.
+  g_lastFinishAccepted = false;
   if (state == SENSOR_RESULT_HOLD) {
     resetBuffer();
     return;
@@ -2182,8 +2356,11 @@ static void finishSwing(uint32_t nowMs) {
     lastResult.faceAngleImpactCaptured = swing.faceAngleImpactCaptured;
     lastResult.pathAngleImpactDeg = swing.pathAngleImpactDeg;
 
-    // Legacy detector accepted a stroke: log it for diagnostics, but do NOT
-    // drive the UI (g_putt owns results). Recycle the FSM so it keeps cycling.
+    // Legacy detector accepted a stroke. Signal the caller so it can build the
+    // UI result from the OrientationTracker over this stroke window. The FSM is
+    // recycled to SETTLING here; the result-building path moves it to
+    // RESULT_HOLD afterward (which suppresses re-detection).
+    g_lastFinishAccepted = true;
     printResult("PUTT_DETECTED", nullptr, nowMs);
     logRawStrokeRecent(swing.startMs, nowMs);
     state = SENSOR_SETTLING;
@@ -2225,6 +2402,14 @@ static void startSwing(const Vec3 &gyroRad, uint32_t triggerMs) {
   swing.maxGyroDps = fabsf(dot3(gyroRad, swing.gyroAxis) * RAD_TO_DEG_F);
   swing.axisAccum = gyroRad;
   swing.preStillMs = triggerMs - stateSinceMs;
+
+  // Track orientation across the live stroke from the address pose so the trace
+  // (headPoint) and face/path (decompose) come from the OrientationTracker, the
+  // same way the buffered path does. Gravity at address approximates the shaft.
+  g_orient.begin(gravityReady ? gravityAxis : Vec3{0.0f, 0.0f, 1.0f});
+  g_orientActive = true;
+  orientLastMs = triggerMs;
+
   state = SENSOR_SWING;
   stateSinceMs = startMs;
   Serial.print(F("SWING_STARTED,ms="));
@@ -2566,7 +2751,14 @@ static bool analyzeBufferedCandidate(uint32_t nowMs, bool requireQuiet) {
   estimateEnvelopeTransition(startIndex, endIndex);
   logRawStrokeWindow(startIndex, endIndex);
 
+  uint16_t uiStart = (uint16_t)startIndex;
+  uint16_t uiEnd = (uint16_t)endIndex;
   finishSwing(orderedBuffer[endIndex].ms);
+  if (g_lastFinishAccepted) {
+    // Legacy accepted: build the result UI from the OrientationTracker over this
+    // exact buffered window. This moves the FSM to RESULT_HOLD.
+    buildLegacyUiResult(uiStart, uiEnd);
+  }
   return true;
 }
 
@@ -2759,6 +2951,17 @@ static void updateSwing(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
 
   float projectionDps = updateSwingAxis(nowMs, gyroRad, dps);
   updateSwingFeatures(nowMs, dps, gyroRad, linearMps2, projectionDps);
+
+  // Advance the OrientationTracker BEFORE plotting the head / capturing impact so
+  // both reflect this sample's pose (mirrors processBufferedSample).
+  if (g_orientActive) {
+    float odt = (float)(nowMs - orientLastMs) / 1000.0f;
+    orientLastMs = nowMs;
+    if (odt > 0.0f && odt < 0.1f) {
+      g_orient.integrate(gyroRad, odt);
+    }
+  }
+
   if (swing.previousLinearAccelReady) {
     float accelDelta = mag3(sub3(linearAccel, swing.previousLinearAccelMps2));
     if (accelDelta > swing.maxAccelDeltaMps2) {
@@ -2767,7 +2970,11 @@ static void updateSwing(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
     if (!swing.impactDetected && swing.transitionDetected && accelDelta >= IMPACT_ACCEL_DELTA_MPS2) {
       swing.impactDetected = true;
       swing.impactMs = nowMs;
-      swing.faceAngleImpactDeg = swing.faceAngleDeg;
+      // Face/path from the OrientationTracker at impact (sign convention: open=R,
+      // closed=L), matching the buffered path. faceAngleDeg kept as a fallback.
+      StrokeAngles ang = g_orient.decompose(swing.gyroAxis);
+      swing.faceAngleImpactDeg = -ang.faceDeg;
+      swing.pathAngleImpactDeg = ang.pathDeg;
       swing.faceAngleImpactCaptured = true;
       traceImpactIndex = traceCount > 0 ? traceCount - 1 : 0;
       Serial.print(F("IMPACT_DETECTED,ms="));
@@ -2826,6 +3033,11 @@ static void updateSwing(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
       return;
     }
     finishSwing(nowMs);
+    if (g_lastFinishAccepted) {
+      // Real-time accept (buffered path didn't fire first): surface a result
+      // from the live trace + legacy estimated angles so it isn't lost.
+      buildLegacyUiResultRealtime(nowMs);
+    }
   }
 }
 
@@ -2995,11 +3207,10 @@ void loop() {
     Serial.print(F(",axis="));    Serial.print(pe.features.axisConsistency, 2);
     Serial.print(F(",dur_ms="));  Serial.println(pe.features.durationMs);
 
-    // g_putt now OWNS the result UI. On an accepted putt (subject to the AUTO vs
-    // MANUAL gating), populate g_uiResult and switch to the result screen.
-    if (pe.decision == PuttDecision::Accept && resultsAllowedNow()) {
-      acceptPuttResult(nowMs);
-    }
+    // The LEGACY impact-gated detector now OWNS the result UI (it is more
+    // sensitive). g_putt keeps running for the PUTTV2 serial diagnostics above
+    // and side-by-side comparison, but it NO LONGER drives the result screen.
+    // (acceptPuttResult / resultsAllowedNow remain defined but unused here.)
   }
 
   float rawDps = gyroDps(sample.gyroRad);
