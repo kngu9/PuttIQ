@@ -135,10 +135,15 @@ static const float GYRO_500DPS_DPS_PER_LSB = 0.0175f;
 enum SensorState {
   SENSOR_NO_IMU,
   SENSOR_SETTLING,
+  SENSOR_HOME,        // manual-mode idle: toggle + START button (no detection)
+  SENSOR_COUNTDOWN,   // manual-mode 5s countdown before arming
   SENSOR_READY,
   SENSOR_SWING,
   SENSOR_RESULT_HOLD
 };
+
+enum AppMode { MODE_AUTO, MODE_MANUAL };
+static const uint32_t MANUAL_COUNTDOWN_MS = 5000;
 
 // Vec3 now comes from imu_types.h (shared with the new detector modules).
 
@@ -243,6 +248,9 @@ struct TracePoint {
 };
 
 static SensorState state = SENSOR_NO_IMU;
+static AppMode appMode = MODE_AUTO;
+static uint32_t countdownStartMs = 0;
+static int countdownLastSec = -1;
 static uint8_t imuAddress = 0;
 static bool imuReady = false;
 static float imuTempSensitivity = 256.0f;
@@ -478,6 +486,28 @@ static void showNoImu() {
   drawCentered("check board", 140, 1, UI_GREY);
 }
 
+// Draw text horizontally centered at a given x (for side-by-side toggle labels).
+static void drawTextAtSprite(const char *text, int16_t cx, int16_t y, uint8_t size, uint16_t color) {
+  screenSprite.setTextSize(size);
+  int16_t w = screenSprite.textWidth(text);
+  screenSprite.setCursor(cx - w / 2, y);
+  screenSprite.setTextColor(color);
+  screenSprite.print(text);
+}
+
+// AUTO | MANUAL toggle pill at the top of the home screens. Active half = amber.
+static void drawModeToggleSprite() {
+  screenSprite.drawRoundRect(66, 38, 108, 24, 12, UI_GREY);
+  if (appMode == MODE_AUTO) {
+    screenSprite.fillRoundRect(67, 39, 53, 22, 11, UI_AMBER);
+  } else {
+    screenSprite.fillRoundRect(120, 39, 53, 22, 11, UI_AMBER);
+  }
+  drawTextAtSprite("AUTO", 93, 46, 1, appMode == MODE_AUTO ? TFT_BLACK : UI_GREY);
+  drawTextAtSprite("MAN", 147, 46, 1, appMode == MODE_MANUAL ? TFT_BLACK : UI_GREY);
+}
+
+// Auto home (listening) OR manual post-countdown "putt now" prompt.
 static void showReady() {
   if (!displayReady) {
     return;
@@ -485,17 +515,57 @@ static void showReady() {
   if (screenSpriteReady) {
     screenSprite.fillSprite(TFT_BLACK);
     screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCenteredSprite("PuttIQ", 104, 3, TFT_WHITE);
-    screenSprite.fillCircle(120, 150, 4, UI_AMBER);
-    drawCenteredSprite("ready", 166, 1, UI_GREY);
+    if (appMode == MODE_AUTO) {
+      drawModeToggleSprite();
+      drawCenteredSprite("PuttIQ", 104, 3, TFT_WHITE);
+      screenSprite.fillCircle(120, 150, 4, UI_AMBER);
+      drawCenteredSprite("listening", 166, 1, UI_GREY);
+    } else {
+      drawCenteredSprite("PUTT", 96, 3, UI_AMBER);
+      drawCenteredSprite("make your stroke", 136, 1, TFT_WHITE);
+      drawCenteredSprite("tap to cancel", 168, 1, UI_GREY);
+    }
     screenSprite.pushSprite(0, 0);
     return;
   }
   tft.fillScreen(TFT_BLACK);
   tft.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCentered("PuttIQ", 104, 3, TFT_WHITE);
-  tft.fillCircle(120, 150, 4, UI_AMBER);
-  drawCentered("ready", 166, 1, UI_GREY);
+  drawCentered(appMode == MODE_AUTO ? "PuttIQ" : "PUTT", 104, 3, TFT_WHITE);
+}
+
+// Manual-mode home: toggle + large START button (no detection running).
+static void showHome() {
+  if (!displayReady) {
+    return;
+  }
+  if (screenSpriteReady) {
+    screenSprite.fillSprite(TFT_BLACK);
+    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+    drawModeToggleSprite();
+    // START button
+    screenSprite.fillRoundRect(70, 104, 100, 48, 14, UI_AMBER);
+    drawTextAtSprite("START", 120, 120, 3, TFT_BLACK);
+    drawCenteredSprite("tap to begin", 170, 1, UI_GREY);
+    screenSprite.pushSprite(0, 0);
+    return;
+  }
+  tft.fillScreen(TFT_BLACK);
+  tft.drawCircle(120, 120, 118, TFT_WHITE);
+  drawCentered("START", 104, 3, UI_AMBER);
+}
+
+// Manual-mode countdown: one big amber digit.
+static void showCountdown(int secs) {
+  if (!displayReady || !screenSpriteReady) {
+    return;
+  }
+  char buf[4];
+  snprintf(buf, sizeof(buf), "%d", secs);
+  screenSprite.fillSprite(TFT_BLACK);
+  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
+  drawCenteredSprite("GET READY", 70, 1, UI_GREY);
+  drawCenteredSprite(buf, 96, 6, UI_AMBER);
+  screenSprite.pushSprite(0, 0);
 }
 
 static void showArmed() {
@@ -1453,6 +1523,24 @@ static void armForSwing(uint32_t nowMs) {
   showReady();
 }
 
+// Manual-mode idle home (no detection until START -> countdown -> arm).
+static void enterManualHome(uint32_t nowMs) {
+  resetBuffer();
+  state = SENSOR_HOME;
+  stateSinceMs = nowMs;
+  fsmArmed = false;
+  showHome();
+}
+
+// In auto, arm immediately; in manual, drop to the manual home.
+static void enterIdle(uint32_t nowMs) {
+  if (appMode == MODE_MANUAL) {
+    enterManualHome(nowMs);
+  } else {
+    armForSwing(nowMs);
+  }
+}
+
 static uint32_t forwardMsFor(uint32_t nowMs) {
   if (!swing.transitionDetected || swing.transitionMs <= swing.startMs) {
     return nowMs - swing.startMs;
@@ -1906,7 +1994,7 @@ static void processBufferedSample(uint16_t index, bool learnAxis) {
       swing.impactDetected = true;
       swing.impactMs = s.ms;
       StrokeAngles ang = g_orient.decompose(swing.gyroAxis);
-      swing.faceAngleImpactDeg = ang.faceDeg;
+      swing.faceAngleImpactDeg = -ang.faceDeg;  // sign convention: open=R, closed=L
       swing.pathAngleImpactDeg = ang.pathDeg;
       swing.faceAngleImpactCaptured = true;
       traceImpactIndex = traceCount > 0 ? traceCount - 1 : 0;
@@ -2149,7 +2237,7 @@ static void updateReady(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
     if (requireStillnessForReady) {
       if (dps < READY_STILL_GYRO_DPS && linearMps2 < READY_STILL_LINEAR_MPS2) {
         if (nowMs - stateSinceMs >= BOOT_READY_HOLD_MS) {
-          armForSwing(nowMs);
+          enterIdle(nowMs);  // auto: arm & listen; manual: drop to home
         }
       } else {
         stateSinceMs = nowMs;
@@ -2157,7 +2245,7 @@ static void updateReady(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
     } else if (nowMs - stateSinceMs >= POST_PUTT_COOLDOWN_MS &&
                dps < REARM_MAX_GYRO_DPS &&
                linearMps2 < READY_STILL_LINEAR_MPS2) {
-      armForSwing(nowMs);
+      enterIdle(nowMs);
     }
     return;
   }
@@ -2391,6 +2479,67 @@ static void updateSwing(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
   }
 }
 
+// Home/countdown interaction + the AUTO/MANUAL toggle (home screens only).
+static void updateHomeAndCountdown(uint32_t nowMs) {
+  // Manual countdown: redraw on each second change, arm when it hits zero.
+  if (state == SENSOR_COUNTDOWN) {
+    uint32_t elapsed = nowMs - countdownStartMs;
+    if (elapsed >= MANUAL_COUNTDOWN_MS) {
+      armForSwing(nowMs);  // -> SENSOR_READY (manual: "PUTT" prompt, listening)
+      return;
+    }
+    int secs = (int)((MANUAL_COUNTDOWN_MS - elapsed) / 1000) + 1;
+    if (secs > 5) secs = 5;
+    if (secs != countdownLastSec) {
+      countdownLastSec = secs;
+      showCountdown(secs);
+    }
+    return;
+  }
+
+  bool onHome = (state == SENSOR_HOME) ||
+                (state == SENSOR_READY && appMode == MODE_AUTO);
+  bool manualArmed = (state == SENSOR_READY && appMode == MODE_MANUAL);
+  if (!onHome && !manualArmed) {
+    return;
+  }
+
+  TouchEvent event = pollTouchEvent(nowMs);
+  if (event.gesture != TOUCH_TAP) {
+    return;
+  }
+
+  // Manual armed (post-countdown): any tap cancels back to home.
+  if (manualArmed) {
+    enterManualHome(nowMs);
+    return;
+  }
+
+  // Mode toggle pill (top of either home).
+  if (event.y >= 32 && event.y <= 68 && event.x >= 60 && event.x <= 180) {
+    if (event.x < 120) {
+      if (appMode != MODE_AUTO) {
+        appMode = MODE_AUTO;
+        armForSwing(nowMs);
+      }
+    } else {
+      appMode = MODE_MANUAL;
+      enterManualHome(nowMs);
+    }
+    return;
+  }
+
+  // START button (manual home only) -> begin the countdown.
+  if (state == SENSOR_HOME && event.y >= 100 && event.y <= 158 &&
+      event.x >= 66 && event.x <= 174) {
+    state = SENSOR_COUNTDOWN;
+    countdownStartMs = nowMs;
+    countdownLastSec = -1;
+    showCountdown(5);
+    return;
+  }
+}
+
 static void updateResultHold(uint32_t nowMs) {
   if (state != SENSOR_RESULT_HOLD) {
     return;
@@ -2407,7 +2556,7 @@ static void updateResultHold(uint32_t nowMs) {
   }
 
   if (isExitButtonTap(event)) {
-    armForSwing(nowMs);
+    enterIdle(nowMs);  // auto: re-arm; manual: back to home
     return;
   }
 
@@ -2593,6 +2742,7 @@ void loop() {
   }
   updateSwing(nowMs, dps, gyro, linearAccel, linearMps2);
   updateResultHold(nowMs);
+  updateHomeAndCountdown(nowMs);
   printStatus(nowMs, dps);
 
   digitalWrite(LED_BUILTIN,
