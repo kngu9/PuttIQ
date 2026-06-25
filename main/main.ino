@@ -40,10 +40,6 @@ static float pathZeroDeg = 0.0f;
 #define LED_BUILTIN 13
 #endif
 
-// Instrument UI palette: one accent (amber), everything else white/grey.
-#define UI_AMBER 0xFD20
-#define UI_GREY 0x8410
-
 static const uint32_t SERIAL_BAUD = 115200;
 static const char FW_VERSION[] = "face_zero_start_v71";
 
@@ -310,9 +306,7 @@ static bool fsmArmed = false;
 static ResultPage resultPage = RESULT_PAGE_TRACE;
 static LastResult lastResult = {0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, false, -1, 0.0f, false};
 
-static TFT_eSprite screenSprite = TFT_eSprite(&tft);
 static bool displayReady = false;
-static bool screenSpriteReady = false;
 
 static float mag3(const Vec3 &v) {
   return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -413,20 +407,6 @@ static void drawCentered(const char *text, int16_t y, uint8_t size, uint16_t col
   tft.print(text);
 }
 
-static void drawCenteredSprite(const char *text, int16_t y, uint8_t size, uint16_t color) {
-  int16_t w = 0;
-  screenSprite.setTextSize(size);
-  w = screenSprite.textWidth(text);
-  screenSprite.setCursor((240 - w) / 2, y);
-  screenSprite.setTextColor(color);
-  screenSprite.print(text);
-}
-
-static void drawExitButtonSprite() {
-  screenSprite.drawRoundRect(78, 198, 84, 26, 13, TFT_DARKGREY);
-  drawCenteredSprite("EXIT", 205, 1, TFT_LIGHTGREY);
-}
-
 static void drawExitButtonTft() {
   tft.drawRoundRect(78, 198, 84, 26, 13, TFT_DARKGREY);
   drawCentered("EXIT", 205, 1, TFT_LIGHTGREY);
@@ -436,196 +416,6 @@ static bool isExitButtonTap(const TouchEvent &event) {
   return event.gesture == TOUCH_TAP &&
          event.x >= 66 && event.x <= 174 &&
          event.y >= 184 && event.y <= 236;
-}
-
-static void drawScreen(const char *title, const char *line1, const char *line2, uint16_t accent) {
-  return;  // LVGL milestone: legacy TFT_eSPI UI neutered so it doesn't fight LVGL.
-  if (!displayReady) {
-    return;
-  }
-
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.fillCircle(120, 120, 112, TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 112, accent);
-    screenSprite.drawCircle(120, 120, 111, accent);
-    drawCenteredSprite(title, 62, 3, accent);
-    if (line1 != nullptr) {
-      drawCenteredSprite(line1, 112, 2, TFT_WHITE);
-    }
-    if (line2 != nullptr) {
-      drawCenteredSprite(line2, 144, 2, TFT_LIGHTGREY);
-    }
-    screenSprite.pushSprite(0, 0);
-    return;
-  }
-
-  tft.fillScreen(TFT_BLACK);
-  tft.fillCircle(120, 120, 112, TFT_BLACK);
-  tft.drawCircle(120, 120, 112, accent);
-  tft.drawCircle(120, 120, 111, accent);
-  drawCentered(title, 62, 3, accent);
-  if (line1 != nullptr) {
-    drawCentered(line1, 112, 2, TFT_WHITE);
-  }
-  if (line2 != nullptr) {
-    drawCentered(line2, 144, 2, TFT_LIGHTGREY);
-  }
-}
-
-static void showBoot() {
-  drawScreen("PuttIQ", "Starting", nullptr, TFT_CYAN);
-}
-
-static void showNoImu() {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady) {
-    return;
-  }
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCenteredSprite("NO IMU", 96, 3, UI_AMBER);
-    drawCenteredSprite("check board", 140, 1, UI_GREY);
-    screenSprite.pushSprite(0, 0);
-    return;
-  }
-  tft.fillScreen(TFT_BLACK);
-  tft.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCentered("NO IMU", 96, 3, UI_AMBER);
-  drawCentered("check board", 140, 1, UI_GREY);
-}
-
-// Draw text horizontally centered at a given x (for side-by-side toggle labels).
-static void drawTextAtSprite(const char *text, int16_t cx, int16_t y, uint8_t size, uint16_t color) {
-  screenSprite.setTextSize(size);
-  int16_t w = screenSprite.textWidth(text);
-  screenSprite.setCursor(cx - w / 2, y);
-  screenSprite.setTextColor(color);
-  screenSprite.print(text);
-}
-
-// AUTO | MANUAL toggle pill at the top of the home screens. Active half = amber.
-static void drawModeToggleSprite() {
-  screenSprite.drawRoundRect(66, 38, 108, 24, 12, UI_GREY);
-  if (appMode == MODE_AUTO) {
-    screenSprite.fillRoundRect(67, 39, 53, 22, 11, UI_AMBER);
-  } else {
-    screenSprite.fillRoundRect(120, 39, 53, 22, 11, UI_AMBER);
-  }
-  drawTextAtSprite("AUTO", 93, 46, 1, appMode == MODE_AUTO ? TFT_BLACK : UI_GREY);
-  drawTextAtSprite("MAN", 147, 46, 1, appMode == MODE_MANUAL ? TFT_BLACK : UI_GREY);
-}
-
-// Beating "listening" indicator: a pulsing amber dot + "listening". Used while
-// armed and waiting for a stroke, in BOTH auto home and manual post-countdown.
-static void drawListeningFrame(uint32_t nowMs, bool showToggle) {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady) {
-    return;
-  }
-  if (!screenSpriteReady) {
-    tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCentered("listening", 112, 2, TFT_WHITE);
-    return;
-  }
-  screenSprite.fillSprite(TFT_BLACK);
-  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-  if (showToggle) {
-    drawModeToggleSprite();
-  }
-  // Heartbeat: radius eases 6 -> ~16 -> 6 about once per ~1.1s.
-  float phase = (float)(nowMs % 1100) / 1100.0f;
-  float pulse = 0.5f - 0.5f * cosf(phase * 6.2831853f);  // smooth 0..1..0
-  int16_t r = 6 + (int16_t)(pulse * 10.0f);
-  screenSprite.fillCircle(120, 112, r, UI_AMBER);
-  drawCenteredSprite("listening", 150, 2, TFT_WHITE);
-  screenSprite.pushSprite(0, 0);
-}
-
-// Drawn once on arming; the loop animates it via updateListeningAnim().
-static void showReady() {
-  drawListeningFrame(millis(), appMode == MODE_AUTO);
-}
-
-// Manual-mode home: toggle + large START button (no detection running).
-static void showHome() {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady) {
-    return;
-  }
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-    drawModeToggleSprite();
-    // START button
-    screenSprite.fillRoundRect(70, 104, 100, 48, 14, UI_AMBER);
-    drawTextAtSprite("START", 120, 120, 3, TFT_BLACK);
-    drawCenteredSprite("tap to begin", 170, 1, UI_GREY);
-    screenSprite.pushSprite(0, 0);
-    return;
-  }
-  tft.fillScreen(TFT_BLACK);
-  tft.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCentered("START", 104, 3, UI_AMBER);
-}
-
-// Manual-mode countdown: one big amber digit.
-static void showCountdown(int secs) {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady || !screenSpriteReady) {
-    return;
-  }
-  char buf[4];
-  snprintf(buf, sizeof(buf), "%d", secs);
-  screenSprite.fillSprite(TFT_BLACK);
-  screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-  drawCenteredSprite("GET READY", 70, 1, UI_GREY);
-  drawCenteredSprite(buf, 96, 6, UI_AMBER);
-  screenSprite.pushSprite(0, 0);
-}
-
-static void showArmed() {
-  drawScreen("ARMED", "Putt now", nullptr, TFT_GREEN);
-}
-
-// Brief non-blocking amber "PUTT" confirmation drawn before the trace page.
-static void showPuttSplash() {
-  return;  // LVGL milestone: neutered.
-  if (!displayReady) {
-    return;
-  }
-  if (screenSpriteReady) {
-    screenSprite.fillSprite(TFT_BLACK);
-    screenSprite.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCenteredSprite("PUTT", 104, 3, UI_AMBER);
-    screenSprite.pushSprite(0, 0);
-  } else {
-    tft.fillScreen(TFT_BLACK);
-    tft.drawCircle(120, 120, 118, TFT_WHITE);
-    drawCentered("PUTT", 104, 3, UI_AMBER);
-  }
-  delay(250);
-}
-
-static void showImuStarting() {
-  drawScreen("IMU", "Starting", nullptr, TFT_CYAN);
-}
-
-static void showResult(bool detected, const char *reason, uint32_t durationMs, float tempo) {
-  char tempoLine[18];
-  uint16_t tempo100 = (uint16_t)(tempo * 100.0f + 0.5f);
-  snprintf(tempoLine, sizeof(tempoLine), "%u.%02u:1 tempo", tempo100 / 100, tempo100 % 100);
-
-  char durationLine[18];
-  snprintf(durationLine, sizeof(durationLine), "%lu ms", (unsigned long)durationMs);
-
-  if (detected) {
-    drawScreen("PUTT", tempoLine, "Tap trace", TFT_CYAN);
-  } else {
-    drawScreen("REJECT", reason, durationLine, TFT_ORANGE);
-  }
 }
 
 static void initTouchButton() {
@@ -1430,7 +1220,6 @@ static void armForSwing(uint32_t nowMs) {
   fsmArmed = true;  // ready == armed: no separate stillness-arm step
 
   printReadyEvent(nowMs);
-  showReady();
 }
 
 // Manual-mode idle home (no detection until START -> countdown -> arm).
@@ -1439,7 +1228,6 @@ static void enterManualHome(uint32_t nowMs) {
   state = SENSOR_HOME;
   stateSinceMs = nowMs;
   fsmArmed = false;
-  showHome();
 }
 
 // In auto, arm immediately; in manual, drop to the manual home.
@@ -1843,7 +1631,6 @@ static void updateReady(uint32_t nowMs, float dps, const Vec3 &gyroRad, const Ve
           readyStartCount = 0;
           Serial.print(F("AUTO_ARMED,ms="));
           Serial.println(nowMs);
-          showArmed();
         }
       } else {
         readyStillSinceMs = 0;
@@ -2172,13 +1959,9 @@ void setup() {
   printDisplayConfig();
 
   initDisplay();
-  showImuStarting();
   Serial.println(F("SETUP,stage=begin_imu"));
   beginImu();
   Serial.println(imuReady ? F("SETUP,stage=imu_ready") : F("SETUP,stage=no_imu"));
-  if (!imuReady) {
-    showNoImu();
-  }
   lastStatusMs = millis();
   lastImuRetryMs = millis();
 }
