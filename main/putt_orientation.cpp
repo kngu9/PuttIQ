@@ -4,6 +4,15 @@
 
 static const float RAD_TO_DEG = 57.2957795f;
 
+// v_addr = q (x) (0,v) (x) q*   (rotate body-fixed vector into address frame)
+static Vec3 rotateByQuat(float w, float x, float y, float z, const Vec3 &v) {
+  // t = 2 * cross(qvec, v)
+  Vec3 qv{x, y, z};
+  Vec3 t = scale3(cross3(qv, v), 2.0f);
+  // v' = v + w*t + cross(qvec, t)
+  return add3(v, add3(scale3(t, w), cross3(qv, t)));
+}
+
 void OrientationTracker::begin(const Vec3 &gravityAtAddress) {
   qw_ = 1; qx_ = 0; qy_ = 0; qz_ = 0;
   eShaft_ = normalize3(gravityAtAddress);
@@ -47,4 +56,20 @@ StrokeAngles OrientationTracker::decompose(const Vec3 &swingAxis) const {
   a.swingDeg = dot3(r, eSwing) * RAD_TO_DEG;
   a.pathDeg  = dot3(r, ePath)  * RAD_TO_DEG;
   return a;
+}
+
+HeadPoint OrientationTracker::headPoint(const Vec3 &swingAxis, float shaftLen) const {
+  // Build the same address basis as decompose().
+  Vec3 sw = sub3(swingAxis, scale3(eShaft_, dot3(swingAxis, eShaft_)));
+  if (mag3(sw) < 1e-4f) {
+    Vec3 tref = (std::fabs(eShaft_.x) < 0.9f) ? Vec3{1,0,0} : Vec3{0,1,0};
+    sw = sub3(tref, scale3(eShaft_, dot3(tref, eShaft_)));
+  }
+  Vec3 eSwing = normalize3(sw);
+  Vec3 ePath  = cross3(eShaft_, eSwing);
+  Vec3 dAddr = rotateByQuat(qw_, qx_, qy_, qz_, eShaft_);   // shaft-down in address frame
+  HeadPoint p;
+  p.x = shaftLen * dot3(dAddr, eSwing);
+  p.y = shaftLen * dot3(dAddr, ePath);
+  return p;
 }

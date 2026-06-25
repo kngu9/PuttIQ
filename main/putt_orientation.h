@@ -8,6 +8,9 @@ struct StrokeAngles {
   float pathDeg;   // swing-plane tilt vs the target line (in-to-out/out-to-in)
 };
 
+// Clubhead horizontal position in the address frame: x=lateral, y=forward.
+struct HeadPoint { float x, y; };
+
 // Integrates body-frame gyro into an orientation quaternion from an address
 // reference, then decomposes the accumulated rotation onto an orthonormal
 // address basis (shaft / swing / path).
@@ -23,6 +26,9 @@ public:
   //   stroke's swing axis is only known partway through the stroke, so the
   //   swing/path basis is built here rather than at begin().
   StrokeAngles decompose(const Vec3 &swingAxis) const;
+
+  // Current clubhead horizontal position in the address frame (shaft length L).
+  HeadPoint headPoint(const Vec3 &swingAxis, float shaftLen) const;
 
 private:
   float qw_ = 1, qx_ = 0, qy_ = 0, qz_ = 0;        // orientation from address

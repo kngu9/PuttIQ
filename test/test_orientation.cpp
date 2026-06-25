@@ -54,10 +54,37 @@ static void test_tilted_shaft_twist() {
   CHECK_NEAR(a.swingDeg, 0.0f, 0.6f);
 }
 
+// A pure pendulum swing about the swing axis sweeps the head forward/back (y),
+// with negligible lateral (x) motion -> a straight line.
+static void test_trace_pendulum_straight() {
+  OrientationTracker o; o.begin(Vec3{0,0,1});
+  // sample the head at a few rotation amounts about the swing axis (+x)
+  HeadPoint p0 = o.headPoint(Vec3{1,0,0}, 1.0f);
+  spin(o, Vec3{1,0,0}, 20*D2R);
+  HeadPoint p1 = o.headPoint(Vec3{1,0,0}, 1.0f);
+  CHECK_NEAR(p0.x, 0.0f, 1e-3); CHECK_NEAR(p0.y, 0.0f, 1e-3);   // origin at address
+  CHECK(std::fabs(p1.y) > 0.2f);          // swept forward/back appreciably
+  CHECK_NEAR(p1.x, 0.0f, 0.02f);          // negligible lateral -> straight
+  // sin(20deg)*L ~ 0.342
+  CHECK_NEAR(std::fabs(p1.y), 0.342f, 0.03f);
+}
+
+// A path-plane tilt (rotation about ePath = +y here) moves the head laterally (x).
+static void test_trace_path_curves() {
+  OrientationTracker o; o.begin(Vec3{0,0,1});
+  spin(o, Vec3{0,1,0}, 15*D2R);           // tilt about path axis
+  HeadPoint p = o.headPoint(Vec3{1,0,0}, 1.0f);
+  CHECK(std::fabs(p.x) > 0.2f);           // lateral deflection appears
+  // sin(15deg)*L ~ 0.259
+  CHECK_NEAR(std::fabs(p.x), 0.259f, 0.03f);
+}
+
 int main() {
   RUN(test_pure_face);
   RUN(test_pure_swing);
   RUN(test_pure_path);
   RUN(test_tilted_shaft_twist);
+  RUN(test_trace_pendulum_straight);
+  RUN(test_trace_path_curves);
   REPORT();
 }
