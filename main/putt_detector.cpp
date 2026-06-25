@@ -1,11 +1,15 @@
 #include "putt_detector.h"
 #include "putt_features.h"
+#include "putt_orientation.h"
+#include "vec3.h"
 #include <cmath>
 
 void PuttDetector::reset() {
   pre_.reset();
   count_ = 0; inCandidate_ = false; candStart_ = 0;
   quietRunning_ = false; haveLast_ = false;
+  windowGravity_ = Vec3{0, 0, 1};
+  result_ = PuttResult{};
 }
 
 PuttEvent PuttDetector::update(const RawSample &raw) {
@@ -46,6 +50,8 @@ PuttEvent PuttDetector::update(const RawSample &raw) {
       int back = 0;
       while (candStart_ > 0 && back < 40) { --candStart_; ++back; }
       quietRunning_ = false;
+      // Capture gravity at the moment the candidate opens (the address frame).
+      windowGravity_ = pre_.gravityReady() ? pre_.gravityAxis() : Vec3{0, 0, 1};
     }
     return none;
   }
@@ -74,7 +80,9 @@ PuttEvent PuttDetector::decide() {
   f.impactPresent = f.impactJerk >= cfg_.impactJerkMps3;
 
   auto reject = [&](const char *why) {
-    ev.decision = PuttDecision::Reject; ev.reason = why; return ev;
+    ev.decision = PuttDecision::Reject; ev.reason = why;
+    buildResult(ev);
+    return ev;
   };
 
   if (f.durationMs < cfg_.minDurationMs) return reject("too_short");
@@ -89,5 +97,71 @@ PuttEvent PuttDetector::decide() {
   if (cfg_.requireImpact && !f.impactPresent) return reject("no_impact");
 
   ev.decision = PuttDecision::Accept; ev.reason = nullptr;
+  buildResult(ev);
   return ev;
+}
+
+// Consolidate trace + metrics for the current window into result_. Operates on
+// the same buffered window decide() just analyzed (buf_[candStart_..count_]).
+void PuttDetector::buildResult(const PuttEvent &ev) {
+  PuttResult r{};
+  r.detected = ev.detected;
+  r.decision = ev.decision;
+  r.reason = ev.reason;
+  r.peakForwardDps = ev.features.peakForwardDps;
+  r.impactPresent = ev.features.impactPresent;
+  r.impactJerk = ev.features.impactJerk;
+  r.durationMs = ev.features.durationMs;
+
+  const DerivedSample *s = &buf_[candStart_];
+  int n = count_ - candStart_;
+  if (n < 2) { result_ = r; return; }
+
+  WindowGeometry g = analyzeWindowGeometry(s, n);
+  const Vec3 axis = g.axis;
+
+  // Tempo: backswing (activeStart..reversal) vs forward (reversal..activeEnd).
+  uint32_t tStart = s[g.activeStart].tUs;
+  uint32_t tRev   = s[g.reversalIdx].tUs;
+  uint32_t tEnd   = s[g.activeEnd].tUs;
+  r.backswingMs = (tRev > tStart) ? (tRev - tStart) / 1000 : 0;
+  r.forwardMs   = (tEnd > tRev)   ? (tEnd - tRev) / 1000   : 0;
+  r.tempo = (float)r.backswingMs / (float)(r.forwardMs > 0 ? r.forwardMs : 1);
+
+  // Orientation up to the forward peak -> face/path at impact.
+  OrientationTracker ot;
+  ot.begin(windowGravity_);
+  for (int i = 1; i <= g.forwardPeakIdx && i < n; ++i) {
+    float dt = (s[i].tUs - s[i-1].tUs) * 1e-6f;
+    if (dt > 0.0f && dt < 0.1f) ot.integrate(s[i].gyroRad, dt);
+  }
+  StrokeAngles ang = ot.decompose(axis);
+  r.faceDeg = -ang.faceDeg;   // firmware sign convention: open=R/positive
+  r.pathDeg = ang.pathDeg;
+
+  // Trace: integrate across the full window, sampling head position, then
+  // downsample to <= TRACE_CAP points. Impact = nearest point to forwardPeak.
+  int stride = (n + TRACE_CAP - 1) / TRACE_CAP;   // ceil(n / TRACE_CAP) >= 1
+  if (stride < 1) stride = 1;
+  OrientationTracker ot2;
+  ot2.begin(windowGravity_);
+  int outCount = 0;
+  int impactOut = 0;
+  for (int i = 0; i < n && outCount < TRACE_CAP; ++i) {
+    if (i > 0) {
+      float dt = (s[i].tUs - s[i-1].tUs) * 1e-6f;
+      if (dt > 0.0f && dt < 0.1f) ot2.integrate(s[i].gyroRad, dt);
+    }
+    if (i % stride == 0) {
+      HeadPoint hp = ot2.headPoint(axis, 1.0f);
+      r.trace[outCount].x = hp.x;
+      r.trace[outCount].y = hp.y;
+      if (i <= g.forwardPeakIdx) impactOut = outCount;  // last point at/before impact
+      ++outCount;
+    }
+  }
+  r.traceCount = (uint16_t)outCount;
+  r.impactIndex = (uint16_t)(impactOut < outCount ? impactOut : (outCount > 0 ? outCount - 1 : 0));
+
+  result_ = r;
 }

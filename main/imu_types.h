@@ -74,3 +74,28 @@ struct PuttEvent {
   const char* reason;     // why rejected (nullptr if accepted)
   PuttFeatures features;
 };
+
+static const int TRACE_CAP = 96;   // max downsampled head-trace points
+
+struct TraceXY { float x, y; };
+
+// Everything the UI needs from a decided stroke, computed in the pure detector.
+struct PuttResult {
+  bool detected;
+  PuttDecision decision;
+  const char* reason;
+  // metrics
+  float faceDeg;          // clubface twist at impact (open +, closed -)
+  float pathDeg;          // swing-plane tilt (in/out)
+  float tempo;            // backswing:forward ratio
+  uint32_t backswingMs;
+  uint32_t forwardMs;
+  uint32_t durationMs;
+  float peakForwardDps;
+  bool  impactPresent;
+  float impactJerk;
+  // clubhead trace (address frame, downsampled), impact at impactIndex
+  uint16_t traceCount;
+  TraceXY trace[TRACE_CAP];
+  uint16_t impactIndex;
+};

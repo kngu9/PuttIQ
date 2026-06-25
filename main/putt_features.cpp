@@ -21,6 +21,47 @@ static Vec3 dominantAxis(const DerivedSample *s, int n) {
   return normalize3(acc);
 }
 
+// Intentionally above DetectorConfig.candidateQuietDps (2 dps): margins/duration
+// require a firmer stillness than the detector's candidate windowing.
+static const float QUIET_DPS = 5.0f;
+
+WindowGeometry analyzeWindowGeometry(const DerivedSample *s, int n) {
+  WindowGeometry g{};
+  g.axis = {1, 0, 0};
+  g.reversalIdx = g.forwardPeakIdx = g.activeStart = g.activeEnd = 0;
+  if (n < 2) return g;
+
+  Vec3 axis = dominantAxis(s, n);
+  g.axis = axis;
+
+  // Active span (first..last sample above QUIET).
+  int a = 0; while (a < n && s[a].gyroDps < QUIET_DPS) ++a;
+  int b = n - 1; while (b > a && s[b].gyroDps < QUIET_DPS) --b;
+  g.activeStart = a;
+  g.activeEnd = b;
+
+  // Signed projection peaks within the active span, with their indices.
+  float peakPos = 0, peakNeg = 0; int idxPos = -1, idxNeg = -1;
+  for (int i = a; i <= b && a <= b; ++i) {
+    float proj = dot3(s[i].gyroRad, axis) * RAD_TO_DEG;
+    if (proj > peakPos) { peakPos = proj; idxPos = i; }
+    if (proj < peakNeg) { peakNeg = proj; idxNeg = i; }
+  }
+  // Forward = the lobe occurring LATER in time.
+  int forwardSign = (idxPos >= idxNeg) ? 1 : -1;
+  g.forwardPeakIdx = (forwardSign > 0) ? idxPos : idxNeg;
+  if (g.forwardPeakIdx < 0) g.forwardPeakIdx = a;
+
+  // Reversal = first sample where the on-axis projection crosses from the
+  // backswing sign to the forward sign within the active span.
+  g.reversalIdx = a;
+  for (int i = a; i <= b && a <= b; ++i) {
+    float proj = dot3(s[i].gyroRad, axis) * RAD_TO_DEG;
+    if ((float)forwardSign * proj > 0.0f) { g.reversalIdx = i; break; }
+  }
+  return g;
+}
+
 PuttFeatures extractFeatures(const DerivedSample *s, int n) {
   PuttFeatures f{};
   if (n < 2) return f;
@@ -45,9 +86,6 @@ PuttFeatures extractFeatures(const DerivedSample *s, int n) {
   f.peakLinearMag = peakLinear;
 
   // Active span (first..last sample above QUIET). Compute BEFORE the lobe analysis.
-  const float QUIET_DPS = 5.0f; // intentionally above DetectorConfig.candidateQuietDps
-                                // (2 dps): margins/duration require a firmer stillness
-                                // than the detector's candidate windowing.
   int a = 0; while (a < n && s[a].gyroDps < QUIET_DPS) ++a;
   int b = n - 1; while (b > a && s[b].gyroDps < QUIET_DPS) --b;
   f.durationMs = (b > a) ? (s[b].tUs - s[a].tUs) / 1000 : 0;

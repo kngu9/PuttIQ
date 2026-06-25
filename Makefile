@@ -1,7 +1,7 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Imain -Itest
 
-TESTS := test_vec3 test_preprocess test_features test_detector test_orientation
+TESTS := test_vec3 test_preprocess test_features test_detector test_orientation test_result
 
 .PHONY: test replay clean
 test: $(TESTS:%=build/%)
