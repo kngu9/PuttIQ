@@ -4,6 +4,11 @@
  * Opts: --font test/ui_fonts/DSEG7.ttf --size 44 --bpp 4 --format lvgl --range 0x2D-0x3A -o test/ui_fonts/dseg7_44.c --force-fast-kern-format
  ******************************************************************************/
 
+// Device (Arduino) build: the lvgl library exposes "lvgl.h" directly but not
+// "lvgl/lvgl.h", so force the simple include. Host preview defines this via -D.
+#ifndef LV_LVGL_H_INCLUDE_SIMPLE
+#define LV_LVGL_H_INCLUDE_SIMPLE
+#endif
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
 #else

@@ -19,6 +19,7 @@
 #include <nrf.h>
 #include "putt_detector.h"
 #include "putt_orientation.h"
+#include "ui_screens.h"  // LVGL v9.5 screen builders (ui_build_home, etc.)
 
 // New impact-triggered detector (runs alongside the legacy path for live eval).
 static PuttDetector g_putt{DetectorConfig{}};
@@ -431,6 +432,7 @@ static bool isExitButtonTap(const TouchEvent &event) {
 }
 
 static void drawScreen(const char *title, const char *line1, const char *line2, uint16_t accent) {
+  return;  // LVGL milestone: legacy TFT_eSPI UI neutered so it doesn't fight LVGL.
   if (!displayReady) {
     return;
   }
@@ -469,6 +471,7 @@ static void showBoot() {
 }
 
 static void showNoImu() {
+  return;  // LVGL milestone: neutered.
   if (!displayReady) {
     return;
   }
@@ -510,6 +513,7 @@ static void drawModeToggleSprite() {
 // Beating "listening" indicator: a pulsing amber dot + "listening". Used while
 // armed and waiting for a stroke, in BOTH auto home and manual post-countdown.
 static void drawListeningFrame(uint32_t nowMs, bool showToggle) {
+  return;  // LVGL milestone: neutered.
   if (!displayReady) {
     return;
   }
@@ -540,6 +544,7 @@ static void showReady() {
 
 // Manual-mode home: toggle + large START button (no detection running).
 static void showHome() {
+  return;  // LVGL milestone: neutered.
   if (!displayReady) {
     return;
   }
@@ -561,6 +566,7 @@ static void showHome() {
 
 // Manual-mode countdown: one big amber digit.
 static void showCountdown(int secs) {
+  return;  // LVGL milestone: neutered.
   if (!displayReady || !screenSpriteReady) {
     return;
   }
@@ -579,6 +585,7 @@ static void showArmed() {
 
 // Brief non-blocking amber "PUTT" confirmation drawn before the trace page.
 static void showPuttSplash() {
+  return;  // LVGL milestone: neutered.
   if (!displayReady) {
     return;
   }
@@ -879,6 +886,7 @@ static void safeDrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_
 // TRACE hero page: immersive clubhead arc on the instrument face.
 // Sprite-only layout; minimal centered fallback when the sprite is unavailable.
 static void showTracePage() {
+  return;  // LVGL milestone: neutered.
   if (!displayReady) {
     return;
   }
@@ -995,6 +1003,7 @@ static void showTracePage() {
 
 // DETAILS page: consolidated numbers stacked within the safe circle, plus ZERO.
 static void showDetailsPage() {
+  return;  // LVGL milestone: neutered.
   char faceVal[12];
   formatFaceRL(faceVal, sizeof(faceVal), lastResult.faceAngleImpactDeg - faceZeroDeg);
 
@@ -1182,22 +1191,97 @@ static TouchEvent pollTouchEvent(uint32_t nowMs) {
   return event;
 }
 
+// ===========================================================================
+// LVGL v9.5 on-device pipeline (display flush + touch + tick).
+// The legacy TFT_eSPI immediate-mode UI functions are neutered (early-return)
+// so they don't fight LVGL for the panel. The app FSM still runs; this milestone
+// just proves the LVGL pipeline by rendering the home screen and reacting to a tap.
+// ===========================================================================
+static bool      g_lvglReady = false;
+static bool      g_autoMode  = true;          // toggled by tapping the screen
+static lv_display_t* g_disp  = nullptr;
+
+// Partial render buffer: 240 x 40 RGB565 = 19200 px = 38400 bytes.
+// If RAM overflows, shrink the row count (e.g. 240*24). See compile report.
+static lv_color_t g_lvbuf[240 * 40];
+
+// LVGL tick source.
+static uint32_t lv_millis_cb(void) { return millis(); }
+
+// Push a rendered area to the GC9A01 via TFT_eSPI.
+// NOTE: the `true` arg to pushColors() = byte-swap. LVGL emits little-endian
+// RGB565; if colors look wrong on the panel, toggle this flag FIRST.
+static void lv_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
+  uint32_t w = area->x2 - area->x1 + 1;
+  uint32_t h = area->y2 - area->y1 + 1;
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushColors((uint16_t*)px_map, w * h, true);
+  tft.endWrite();
+  lv_display_flush_ready(disp);
+}
+
+// Touch read (mirrors chsc6x_read in lv_xiao_round_screen.h, v9 signature).
+static void lv_touch_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
+  (void)indev;
+  if (!chsc6x_is_pressed()) {
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
+  lv_coord_t tx = 0, ty = 0;
+  chsc6x_get_xy(&tx, &ty);
+  data->point.x = tx;
+  data->point.y = ty;
+  data->state = LV_INDEV_STATE_PRESSED;
+}
+
+// Rebuild the home screen on a fresh screen object and load it.
+static void lv_show_home(void) {
+  lv_obj_t* scr = lv_obj_create(NULL);
+  ui_build_home(scr, g_autoMode);
+  lv_screen_load(scr);
+}
+
+// Tap anywhere flips auto/manual + rebuilds home. Proves touch -> display.
+static void lv_home_clicked_cb(lv_event_t* e) {
+  (void)e;
+  g_autoMode = !g_autoMode;
+  lv_show_home();
+}
+
+static void initLvgl(void) {
+  lv_init();
+  lv_tick_set_cb(lv_millis_cb);
+
+  g_disp = lv_display_create(240, 240);
+  lv_display_set_buffers(g_disp, g_lvbuf, NULL, sizeof(g_lvbuf),
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_flush_cb(g_disp, lv_flush_cb);
+
+  lv_indev_t* indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(indev, lv_touch_read_cb);
+
+  // Build the home screen and make the whole screen tappable.
+  lv_obj_t* scr = lv_screen_active();
+  ui_build_home(scr, g_autoMode);
+  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(scr, lv_home_clicked_cb, LV_EVENT_CLICKED, NULL);
+
+  g_lvglReady = true;
+}
+
 static void initDisplay() {
   if (!USE_ROUND_DISPLAY) {
     return;
   }
 
   screen_rotation = 0;
-  xiao_disp_init();
+  xiao_disp_init();          // tft.begin() + backlight + fillScreen
   tft.setTextWrap(false);
-  screenSprite.setColorDepth(8);
-  screenSpriteReady = screenSprite.createSprite(240, 240) != nullptr;
-  if (screenSpriteReady) {
-    screenSprite.setTextWrap(false);
-  }
   displayReady = true;
-  initTouchButton();
-  showBoot();
+  initTouchButton();         // TOUCH_INT pinMode + Wire.begin()
+  initLvgl();                // LVGL pipeline + home screen
 }
 
 static void setImuPower(bool enabled) {
@@ -2679,6 +2763,14 @@ void setup() {
 
 void loop() {
   uint32_t nowMs = millis();
+
+  // LVGL milestone: drive the UI every iteration (cheap when idle). Must run
+  // before the IMU sample-rate early-returns below so the panel keeps refreshing
+  // and touch stays responsive.
+  if (g_lvglReady) {
+    lv_timer_handler();
+  }
+
   reportOnSerialConnect(nowMs);
   updateResultHold(nowMs);
 

@@ -43,15 +43,17 @@ build/lvgl/%.o: $(LVGL_DIR)/%.c test/lv_conf.h
 build/liblvgl.a: $(LVGL_OBJS)
 	ar rcs $@ $(LVGL_OBJS)
 
-UI_CPP_SRCS := test/ui_preview.cpp test/ui_screens.cpp
+# UI screen builders + DSEG7 fonts now live in main/ so the Arduino device build
+# compiles them too; the host preview compiles the same files from main/.
+UI_CPP_SRCS := test/ui_preview.cpp main/ui_screens.cpp
 # DSEG7 fonts are C (C linkage, matching LVGL's extern "C" decls) — compile with gcc.
 UI_FONT_OBJS := build/ui_fonts/dseg7_44.o build/ui_fonts/dseg7_28.o
 
-build/ui_fonts/%.o: test/ui_fonts/%.c test/lv_conf.h
+build/ui_fonts/%.o: main/%.c test/lv_conf.h
 	@mkdir -p build/ui_fonts
 	gcc $(LVGL_CFLAGS) -c $< -o $@
 
-build/ui_preview: $(UI_CPP_SRCS) test/ui_screens.h test/lv_conf.h test/stb_image_write.h $(UI_FONT_OBJS) build/liblvgl.a
+build/ui_preview: $(UI_CPP_SRCS) main/ui_screens.h test/lv_conf.h test/stb_image_write.h $(UI_FONT_OBJS) build/liblvgl.a
 	@mkdir -p build
 	$(CXX) -std=c++17 -O2 $(LVGL_INC) $(UI_CPP_SRCS) $(UI_FONT_OBJS) build/liblvgl.a -o $@
 
